@@ -9,6 +9,9 @@
 #include <stdint.h>
 #include <functional>
 #include "TPUart.h"
+#ifdef ESP_PLATFORM
+#include "TPUart/Interface/EspIdf.h"
+#endif
 #ifdef ARDUINO_ARCH_ESP32
 #include "TPUart/Interface/ESP32.h"
 #endif

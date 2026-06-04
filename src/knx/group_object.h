@@ -41,7 +41,7 @@ struct ComFlagEx
 class GroupObject;
 
 #ifndef HAS_FUNCTIONAL
-# if defined(__linux__) || defined(ARDUINO_ARCH_ESP32) || defined(ARDUINO_ARCH_STM32) || defined (ARDUINO_ARCH_SAMD) || defined (ARDUINO_ARCH_RP2040)
+# if defined(__linux__) || defined(ESP_PLATFORM) || defined(ARDUINO_ARCH_ESP32) || defined(ARDUINO_ARCH_STM32) || defined (ARDUINO_ARCH_SAMD) || defined (ARDUINO_ARCH_RP2040)
 #  define HAS_FUNCTIONAL    1
 # else
 #  define HAS_FUNCTIONAL   0

@@ -36,6 +36,10 @@
     #ifndef KNX_NO_AUTOMATIC_GLOBAL_INSTANCE
         void buttonUp();
     #endif
+#elif defined(ESP_PLATFORM)
+#if !defined(LED_BUILTIN)
+    #define LED_BUILTIN 13
+#endif
 #elif defined(ARDUINO_ARCH_STM32)
     #include "stm32_platform.h"
     #ifndef KNX_NO_AUTOMATIC_GLOBAL_INSTANCE
@@ -538,6 +542,8 @@ template <class P, class B> class KnxFacade : private SaveRestore
         #else
             #error "Mask version not supported on ARDUINO_ARCH_STM32"
         #endif
+    #elif defined(ESP_PLATFORM)
+        // native ESP-IDF port instantiates KnxFacade explicitly in project code
     #else // Non-Arduino platforms and Linux platform
         // no predefined global instance
     #endif

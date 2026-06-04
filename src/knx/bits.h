@@ -5,6 +5,8 @@
 
 #if defined(__linux__)
 #include <arpa/inet.h>
+#elif defined(ESP_PLATFORM)
+#include <lwip/inet.h>
 #elif defined(ARDUINO_ARCH_SAMD) || defined(ARDUINO_ARCH_STM32) || defined (DeviceFamily_CC13X0)
 #define getbyte(x,n) (*(((uint8_t*)&(x))+n))
 #define htons(x)  ( (getbyte(x,0)<<8) | getbyte(x,1) ) 
@@ -30,6 +32,8 @@
 #elif defined(ARDUINO_ARCH_ESP8266)
 #include <Arduino.h>
 #include <user_interface.h>
+#elif defined(ESP_PLATFORM)
+#include "openknx_espidf_compat.h"
 #elif defined(ARDUINO_ARCH_ESP32)
 #include <Arduino.h>
 #include <esp_wifi.h>
@@ -61,6 +65,18 @@ void digitalWrite(uint32_t dwPin, uint32_t dwVal);
 uint32_t digitalRead(uint32_t dwPin);
 typedef void (*voidFuncPtr)(void);
 void attachInterrupt(uint32_t pin, voidFuncPtr callback, uint32_t mode);
+#endif
+
+#ifndef lowByte
+#define lowByte(val) ((val)&255)
+#endif
+
+#ifndef highByte
+#define highByte(val) (((val) >> ((sizeof(val) - 1) << 3)) & 255)
+#endif
+
+#ifndef bitRead
+#define bitRead(val, bitno) (((val) >> (bitno)) & 1)
 #endif
 
 #ifndef KNX_NO_PRINT
