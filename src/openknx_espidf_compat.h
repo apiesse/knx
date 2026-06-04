@@ -84,24 +84,24 @@ void attachInterrupt(uint32_t pin, voidFuncPtr callback, uint32_t mode);
 
 void print(const char value[]);
 void print(char value);
-void print(unsigned char value, int base = DEC);
-void print(int value, int base = DEC);
-void print(unsigned int value, int base = DEC);
-void print(long value, int base = DEC);
-void print(unsigned long value, int base = DEC);
-void print(long long value, int base = DEC);
-void print(unsigned long long value, int base = DEC);
+void print(unsigned char value, int base);
+void print(int value, int base);
+void print(unsigned int value, int base);
+void print(long value, int base);
+void print(unsigned long value, int base);
+void print(long long value, int base);
+void print(unsigned long long value, int base);
 void print(double value);
 
 void println(const char value[]);
 void println(char value);
-void println(unsigned char value, int base = DEC);
-void println(int value, int base = DEC);
-void println(unsigned int value, int base = DEC);
-void println(long value, int base = DEC);
-void println(unsigned long value, int base = DEC);
-void println(long long value, int base = DEC);
-void println(unsigned long long value, int base = DEC);
+void println(unsigned char value, int base);
+void println(int value, int base);
+void println(unsigned int value, int base);
+void println(long value, int base);
+void println(unsigned long value, int base);
+void println(long long value, int base);
+void println(unsigned long long value, int base);
 void println(double value);
 void println(void);
 #endif
