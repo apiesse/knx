@@ -9,6 +9,8 @@
 #include "platform.h"
 #include "tpuart_data_link_layer.h"
 
+#include <stdlib.h>
+
 void TpUartDataLinkLayer::setRepetitions(uint8_t nack, uint8_t busy)
 {
     _tpuart.setRepetitions(nack, busy);
@@ -210,7 +212,7 @@ void TpUartDataLinkLayer::processRxFrame(TPUart::Frame &tpFrame)
 
     if (tpFrame.isTransmitted()) {
         dataConReceived(cemiFrame, tpFrame.isAck());
-        delete cemiData;
+        free(cemiData);
         return;
     }
 
@@ -223,7 +225,7 @@ void TpUartDataLinkLayer::processRxFrame(TPUart::Frame &tpFrame)
 #endif
 
     frameReceived(cemiFrame);
-    delete cemiData;
+    free(cemiData);
 }
 
 void TpUartDataLinkLayer::printMessage(const char *message, bool error)
