@@ -81,6 +81,29 @@ void attachInterrupt(uint32_t pin, voidFuncPtr callback, uint32_t mode);
 
 #ifdef __cplusplus
 }
+
+void print(const char value[]);
+void print(char value);
+void print(unsigned char value, int base = DEC);
+void print(int value, int base = DEC);
+void print(unsigned int value, int base = DEC);
+void print(long value, int base = DEC);
+void print(unsigned long value, int base = DEC);
+void print(long long value, int base = DEC);
+void print(unsigned long long value, int base = DEC);
+void print(double value);
+
+void println(const char value[]);
+void println(char value);
+void println(unsigned char value, int base = DEC);
+void println(int value, int base = DEC);
+void println(unsigned int value, int base = DEC);
+void println(long value, int base = DEC);
+void println(unsigned long value, int base = DEC);
+void println(long long value, int base = DEC);
+void println(unsigned long long value, int base = DEC);
+void println(double value);
+void println(void);
 #endif
 
 #endif /* OPENKNX_ESP_IDF_COMPAT_H */
