@@ -47,7 +47,7 @@ EspIdfPlatform::~EspIdfPlatform()
     _remote_addr = nullptr;
 }
 
-void EspIdfPlatform::knxUartConfig(uart_port_t uart_num, int8_t rxPin, int8_t txPin)
+void EspIdfPlatform::knxUartConfig(uart_port_t uart_num, int8_t rxPin, int8_t txPin, uint32_t baud_rate)
 {
     if (interface() != nullptr)
     {
@@ -60,7 +60,7 @@ void EspIdfPlatform::knxUartConfig(uart_port_t uart_num, int8_t rxPin, int8_t tx
     _txPin = txPin;
     if (rxPin >= 0 && txPin >= 0)
     {
-        interface(new TPUart::Interface::EspIdf(uart_num, rxPin, txPin, 19200));
+        interface(new TPUart::Interface::EspIdf(uart_num, rxPin, txPin, baud_rate));
     }
 }
 

@@ -14,7 +14,7 @@ class EspIdfPlatform : public Platform
     EspIdfPlatform(uart_port_t uart_num = UART_NUM_2, int rx_pin = -1, int tx_pin = -1);
     ~EspIdfPlatform();
 
-    void knxUartConfig(uart_port_t uart_num, int8_t rxPin, int8_t txPin);
+    void knxUartConfig(uart_port_t uart_num, int8_t rxPin, int8_t txPin, uint32_t baud_rate);
     void setNetif(esp_netif_t *netif);
 
     uint32_t currentIpAddress() override;
