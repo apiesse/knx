@@ -28,6 +28,9 @@ class BauSystemB : protected BusAccessUnit
     Memory& memory();
     void readMemory();
     void writeMemory();
+    /* Local factory reset: clears the KNX application (address/association/GO tables
+       + parameters) while preserving the individual address. */
+    void factoryReset();
     void addSaveRestore(SaveRestore* obj);
 
     bool restartRequest(uint16_t asap, const SecurityControl secCtrl);

@@ -220,6 +220,13 @@ template <class P, class B> class KnxFacade : private SaveRestore
         return _bau.deviceObject().individualAddress();
     }
 
+    /* Local factory reset: clear the KNX application while keeping the individual
+       address. Caller should reboot afterwards. */
+    void factoryReset()
+    {
+        _bau.factoryReset();
+    }
+
     void loop()
     {
         if (progMode() != _progLedState)

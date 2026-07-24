@@ -196,6 +196,14 @@ void BauSystemB::doMasterReset(EraseCode eraseCode, uint8_t channel)
     _appProgram.masterReset(eraseCode, channel);
 }
 
+void BauSystemB::factoryReset()
+{
+    /* Reset application data but keep the individual address, then persist so the
+       change survives the reboot the caller triggers. */
+    doMasterReset(EraseCode::FactoryResetWithoutIA, 0);
+    writeMemory();
+}
+
 void BauSystemB::restartRequestIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, RestartType restartType, EraseCode eraseCode, uint8_t channel)
 {
     if (restartType == RestartType::BasicRestart)
