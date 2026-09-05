@@ -381,9 +381,9 @@ void BauSystemB::propertyValueReadIndication(Priority priority, HopCountType hop
             // EC: clamp count so elementSize*count fits the uint8 buffer -> no size truncation mismatch and no
             // oversized stack VLA (a PropertyValueRead with a large count would otherwise overflow data[]).
             uint16_t total = (uint16_t)elementSize * numberOfElements;
-            if (total > 255)
+            if (total > 249)
             {
-                elementCount = elementSize ? (uint8_t)(255 / elementSize) : 0;
+                elementCount = elementSize ? (uint8_t)(249 / elementSize) : 0;
                 total = (uint16_t)elementSize * elementCount;
             }
             size = (uint8_t)total;
@@ -420,9 +420,9 @@ void BauSystemB::propertyValueExtReadIndication(Priority priority, HopCountType 
             // oversized stack VLA (a PropertyValueExtRead with numberOfElements up to 255 over the tunnel would
             // otherwise overflow data[]).
             uint16_t total = (uint16_t)elementSize * numberOfElements;
-            if (total > 255)
+            if (total > 245)
             {
-                elementCount = elementSize ? (uint8_t)(255 / elementSize) : 0;
+                elementCount = elementSize ? (uint8_t)(245 / elementSize) : 0;
                 total = (uint16_t)elementSize * elementCount;
             }
             size = (uint8_t)total;
