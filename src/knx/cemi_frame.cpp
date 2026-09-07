@@ -391,7 +391,6 @@ bool CemiFrame::valid() const
         return false;
 
     uint8_t addInfoLen = _data[1];
-#ifdef KNX_FIXES_EC
     // For externally frames (_length != 0), bound the addInfoLen derived index against
     // _length BEFORE dereferencing it else valid() is itself the out-of-bounds (oob) read it is meant to guard.
     // The internally-built case (_length == 0) keeps its existing behaviour.
@@ -407,7 +406,6 @@ bool CemiFrame::valid() const
         return false;
     }
       
-#endif
     uint8_t apduLen = _data[_data[1] + NPDU_LPDU_DIFF];
 
     if (_length != 0 && _length != (addInfoLen + apduLen + NPDU_LPDU_DIFF + 2))
