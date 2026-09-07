@@ -9,6 +9,7 @@
 #include "platform.h"
 #include "tpuart_data_link_layer.h"
 
+#include <new>
 #include <stdlib.h>
 
 void TpUartDataLinkLayer::setRepetitions(uint8_t nack, uint8_t busy)
@@ -18,10 +19,32 @@ void TpUartDataLinkLayer::setRepetitions(uint8_t nack, uint8_t busy)
 
 bool TpUartDataLinkLayer::sendFrame(CemiFrame &cemiFrame)
 {
-    uint8_t *tpData = (uint8_t *)malloc(cemiFrame.telegramLengthtTP());
+    const uint16_t tpSize = cemiFrame.telegramLengthtTP();
+    if (tpSize == 0)
+    {
+        printMessage("Cannot send an empty TP frame", true);
+        dataConReceived(cemiFrame, false);
+        return false;
+    }
+
+    uint8_t *tpData = (uint8_t *)malloc(tpSize);
+    if (tpData == nullptr)
+    {
+        printMessage("Cannot allocate TP transmit buffer", true);
+        dataConReceived(cemiFrame, false);
+        return false;
+    }
     cemiFrame.fillTelegramTP(tpData);
 
-    TPUart::Frame *tpFrame = new TPUart::Frame((char *)tpData, cemiFrame.telegramLengthtTP());
+    TPUart::Frame *tpFrame = new (std::nothrow) TPUart::Frame((char *)tpData, tpSize);
+    if (tpFrame == nullptr || !tpFrame->hasData())
+    {
+        free(tpData);
+        delete tpFrame;
+        printMessage("Cannot allocate TP transmit frame", true);
+        dataConReceived(cemiFrame, false);
+        return false;
+    }
 
     // when not connected or in monitoring mode, discard the frame - silently
     if (!_tpuart.isConnected() || _tpuart.isMonitoring())
@@ -208,11 +231,16 @@ void TpUartDataLinkLayer::processRxFrame(TPUart::Frame &tpFrame)
 #endif
 
     uint8_t *cemiData = (uint8_t *)tpFrame.cemiData();
+    if (cemiData == nullptr)
+    {
+        printMessage("Cannot allocate cEMI receive frame; dropping TP frame", true);
+        return;
+    }
     CemiFrame cemiFrame(cemiData, tpFrame.cemiSize());
 
     if (tpFrame.isTransmitted()) {
         dataConReceived(cemiFrame, tpFrame.isAck());
-        free(cemiData);
+        TPUart::Frame::freeCemiData((char*)cemiData);
         return;
     }
 
@@ -225,7 +253,7 @@ void TpUartDataLinkLayer::processRxFrame(TPUart::Frame &tpFrame)
 #endif
 
     frameReceived(cemiFrame);
-    free(cemiData);
+    TPUart::Frame::freeCemiData((char*)cemiData);
 }
 
 void TpUartDataLinkLayer::printMessage(const char *message, bool error)

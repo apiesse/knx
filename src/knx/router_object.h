@@ -34,8 +34,6 @@ public:
   bool isRfSbcRoutingEnabled();
   bool isIpSbcRoutingEnabled();
 
-  void masterReset(EraseCode eraseCode, uint8_t channel) override;
-
   const uint8_t* restore(const uint8_t* buffer) override;
 
 protected:
@@ -46,6 +44,8 @@ private:
   void functionRouteTableControl(bool isCommand, uint8_t* data, uint8_t length, uint8_t* resultData, uint8_t& resultLength);
   void functionRfEnableSbc(bool isCommand, uint8_t* data, uint8_t length, uint8_t* resultData, uint8_t& resultLength);
   void functionIpEnableSbc(bool isCommand, uint8_t* data, uint8_t length, uint8_t* resultData, uint8_t& resultLength);
+
+  bool hasValidFilterTable();
 
   void commandClearSetRoutingTable(bool bitIsSet);
   bool statusClearSetRoutingTable(bool bitIsSet);

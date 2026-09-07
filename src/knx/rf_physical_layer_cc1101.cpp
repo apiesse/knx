@@ -384,6 +384,14 @@ void RfPhysicalLayerCC1101::stopChip()
     powerDownCC1101();
 
     _platform.closeSpi();
+
+    // stopChip() can interrupt the asynchronous TX state machine after it has
+    // taken ownership of a queue buffer.  Release that array and reset the
+    // state so a later re-enable cannot resume a stale transmission.
+    delete[] sendBuffer;
+    sendBuffer = nullptr;
+    sendBufferLength = 0;
+    _loopState = RX_START;
 }
 
 void RfPhysicalLayerCC1101::showRegisterSettings()
@@ -426,12 +434,25 @@ void RfPhysicalLayerCC1101::loop()
 
             _rfDataLinkLayer.loadNextTxFrame(&sendBuffer, &sendBufferLength);
 
+            if (sendBuffer == nullptr || sendBufferLength == 0)
+            {
+                delete[] sendBuffer;
+                sendBuffer = nullptr;
+                sendBufferLength = 0;
+                _loopState = RX_START;
+                break;
+            }
+
             // Calculate total number of bytes in the KNX RF packet from L-field
             pktLen = PACKET_SIZE(sendBuffer[0]);
             // Check for valid length
-            if ((pktLen == 0) || (pktLen > 290))
+            if ((pktLen == 0) || (pktLen > 290) || (pktLen != sendBufferLength))
             {
                 println("TX packet length error!");
+                delete[] sendBuffer;
+                sendBuffer = nullptr;
+                sendBufferLength = 0;
+                _loopState = RX_START;
                 break;
             }
 
@@ -549,7 +570,9 @@ void RfPhysicalLayerCC1101::loop()
         case TX_END:
         {
             // free buffer
-            delete sendBuffer;
+            delete[] sendBuffer;
+            sendBuffer = nullptr;
+            sendBufferLength = 0;
             // Go back to RX after TX
             _loopState = RX_START;
         }

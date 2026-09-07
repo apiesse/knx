@@ -314,10 +314,18 @@ bool GroupObject::valueNoSend(const KNXValue& value, const Dpt& type)
 
 bool GroupObject::valueNoSendCompare(const KNXValue& value, const Dpt& type)
 {
+    bool conversionSuccessful = false;
+    return valueNoSendCompare(value, type, conversionSuccessful);
+}
+
+bool GroupObject::valueNoSendCompare(const KNXValue& value, const Dpt& type,
+                                     bool& conversionSuccessful)
+{
     if (_commFlagEx.uninitialized)
     {
         // always set first value
-        return valueNoSend(value, type);
+        conversionSuccessful = valueNoSend(value, type);
+        return conversionSuccessful;
     }
     else
     {
@@ -329,8 +337,10 @@ bool GroupObject::valueNoSendCompare(const KNXValue& value, const Dpt& type)
         {
             // value conversion to DPT failed
             // do NOT update the value of the KO!
+            conversionSuccessful = false;
             return false;
         }
+        conversionSuccessful = true;
 
         // check for change in converted value / update value on change only
         const bool dataChanged = memcmp(_data, newData, _dataLength);
@@ -353,13 +363,21 @@ bool GroupObject::valueCompare(const KNXValue& value, const Dpt& type)
 
 bool GroupObject::valueCompareTime(const KNXValue& value, const Dpt& type, uint32_t& lastTime, const uint32_t time)
 {
-    if (valueNoSendCompare(value, type))
+    bool conversionSuccessful = false;
+    return valueCompareTime(value, type, lastTime, time, conversionSuccessful);
+}
+
+bool GroupObject::valueCompareTime(const KNXValue& value, const Dpt& type,
+                                   uint32_t& lastTime, const uint32_t time,
+                                   bool& conversionSuccessful)
+{
+    if (valueNoSendCompare(value, type, conversionSuccessful))
     {
         objectWritten();
         lastTime = millis();
         return true;
     }
-    else if(millis() - lastTime >= time)
+    else if(conversionSuccessful && millis() - lastTime >= time)
     {
         objectWritten();
         lastTime = millis();

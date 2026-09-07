@@ -12,6 +12,7 @@ class KnxIpSearchRequestExtended : public KnxIpFrame
     KnxIpSearchRequestExtended(uint8_t* data, uint16_t length);
     IpHostProtocolAddressInformation& hpai();
     bool requestedDIB(uint8_t code);
+    bool valid() const { return _valid; }
     bool srpByProgMode = false;
     bool srpByMacAddr = false;
     bool srpByService = false;
@@ -20,7 +21,8 @@ class KnxIpSearchRequestExtended : public KnxIpFrame
     uint8_t *srpServiceFamilies = nullptr;
   private:
     IpHostProtocolAddressInformation _hpai;
-    bool requestedDIBs[REQUESTED_DIBS_MAX]; //for now only 1 to 8
+    bool requestedDIBs[REQUESTED_DIBS_MAX] = {false}; // for now only 1 to 8
+    bool _valid = true;
 };
 #endif
 #endif

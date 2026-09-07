@@ -11,6 +11,19 @@
 #include <stdio.h>
 #include "ip_tunnel_server.h"
 
+namespace
+{
+bool cemiManagementWriteAllowed(BauSystemB& bau)
+{
+#ifdef KNX_MANAGEMENT_ALLOW_UNGATED
+    (void)bau;
+    return true;
+#else
+    return bau.deviceObject().progMode();
+#endif
+}
+}
+
 #ifndef KNX_TUNNELING
 CemiServer::CemiServer(BauSystemB& bau)
     : _bau(bau)
@@ -21,8 +34,8 @@ CemiServer::CemiServer(BauSystemB& bau, IpTunnelServer& ipTunnelServer)
 #ifdef USE_USB
         ,
         _usbTunnelInterface(*this,
-        _bau.deviceObject().maskVersion(),
-        _bau.deviceObject().manufacturerId())
+        _bau.deviceObject().manufacturerId(),
+        _bau.deviceObject().maskVersion())
 #endif
 {
     // The cEMI server will hand out the device address + 1 to the cEMI client (e.g. ETS),
@@ -121,16 +134,23 @@ void CemiServer::dataIndicationToTunnel(CemiFrame& frame)
 #ifdef USE_USB
     _usbTunnelInterface.sendCemiFrame(tmpFrame);
 #elif defined(KNX_TUNNELING)
-    _ipTunnelServer.dataIndicationToTunnel(frame);
+    _ipTunnelServer.dataIndicationToTunnel(tmpFrame);
 #endif
 }
 
 void CemiServer::frameReceived(CemiFrame& frame, uint8_t channelId)
 {
+    // A tunnel is an untrusted byte stream. Do not even inspect the message
+    // code unless the complete service-specific cEMI envelope is present.
+    if (!CemiFrame::validBuffer(frame.data(), frame.dataLength()))
+        return;
+
     switch(frame.messageCode())
     {
         case L_data_req:
         {
+            if (!frame.valid() || _dataLinkLayer == nullptr)
+                return;
             handleLData(frame);
             break;
         }
@@ -240,6 +260,9 @@ void CemiServer::handleMPropRead(CemiFrame& frame, uint8_t channelId)
     print("M_PropRead_req: ");
 #endif
     
+    if (frame.dataLength() < 7)
+        return;
+
     uint16_t objectType;
     popWord(objectType, &frame.data()[1]);
     uint8_t objectInstance = frame.data()[3];
@@ -270,20 +293,29 @@ void CemiServer::handleMPropRead(CemiFrame& frame, uint8_t channelId)
     // so that the device and the cEMI client/server connection(tunnel) can operate simultaneously.
     // KNX IP Interfaces which offer multiple simultaneous tunnel connections seem to operate the same way.
     // Each tunnel has its own cEMI client address which is based on the main device address.
-    if (((ObjectType) objectType == OT_DEVICE) && 
+    bool patchClientAddress = true;
+#ifdef KNX_TUNNELING
+    // Device-management reads address the server device. The per-client
+    // address substitution only belongs to USB/data-tunnel cEMI clients.
+    patchClientAddress = !_ipTunnelServer.isConfigChannel(channelId);
+#endif
+
+    if (patchClientAddress && data != nullptr && dataSize >= 1 &&
+                        ((ObjectType) objectType == OT_DEVICE) &&
                         (propertyId == PID_DEVICE_ADDR) &&
-                        (numberOfElements == 1))
+                        (numberOfElements == 1) && startIndex != 0)
     {
         data[0] = (uint8_t) (_clientAddress & 0xFF);
     }
-    else if (((ObjectType) objectType == OT_DEVICE) && 
+    else if (patchClientAddress && data != nullptr && dataSize >= 1 &&
+                        ((ObjectType) objectType == OT_DEVICE) &&
                         (propertyId == PID_SUBNET_ADDR) &&
-                        (numberOfElements == 1))
+                        (numberOfElements == 1) && startIndex != 0)
     {
         data[0] = (uint8_t) ((_clientAddress >> 8) & 0xFF);
     }
 
-    if (data && dataSize && numberOfElements)
+    if (data && dataSize && numberOfElements && dataSize <= MAX_CEMI_FRAME_SIZE - 7)
     {
 #ifdef KNX_LOG_TUNNELING
         printHex(" <- data: ", data, dataSize);
@@ -305,8 +337,8 @@ void CemiServer::handleMPropRead(CemiFrame& frame, uint8_t channelId)
     else
     {
         // Prepare negative response
-        uint8_t responseData[7 + 1];
-        memcpy(responseData, frame.data(), sizeof(responseData));
+        uint8_t responseData[7 + 1] = {0};
+        memcpy(responseData, frame.data(), 7);
         responseData[7] = Void_DP; // Set cEMI error code
         responseData[5] = 0; // Set Number of elements to zero
 
@@ -329,6 +361,9 @@ void CemiServer::handleMPropWrite(CemiFrame& frame, uint8_t channelId)
 {
     print("M_PropWrite_req: "); 
 
+    if (frame.dataLength() < 7)
+        return;
+
     uint16_t objectType;
     popWord(objectType, &frame.data()[1]);
     uint8_t objectInstance = frame.data()[3];
@@ -337,6 +372,7 @@ void CemiServer::handleMPropWrite(CemiFrame& frame, uint8_t channelId)
     uint16_t startIndex = frame.data()[6] | ((frame.data()[5]&0x0F)<<8);
     uint8_t* requestData = &frame.data()[7];
     uint32_t requestDataSize = frame.dataLength() - 7;
+    uint8_t errorCode = 0;
 
     print("ObjType: ");
     print(objectType, DEC);
@@ -351,33 +387,50 @@ void CemiServer::handleMPropWrite(CemiFrame& frame, uint8_t channelId)
 
     printHex(" -> data: ", requestData, requestDataSize);
 
-    // Patch request for device address in device object
-    if (((ObjectType) objectType == OT_DEVICE) && 
-                        (propertyId == PID_DEVICE_ADDR) &&
-                        (numberOfElements == 1))
+    const bool addressByteWrite = ((ObjectType)objectType == OT_DEVICE) &&
+                                  (numberOfElements == 1) &&
+                                  (propertyId == PID_DEVICE_ADDR || propertyId == PID_SUBNET_ADDR);
+
+    if (addressByteWrite)
     {
-        // Temporarily store new cEMI client address in memory
-        // We also be sent back if the client requests it again
-        _clientAddress = (_clientAddress & 0xFF00) | requestData[0];
-        print("cEMI client address: ");
-        println(_clientAddress, HEX);
+        // ETS first sends an exactly seven-byte, no-payload writability probe.
+        // Acknowledge it without dereferencing or changing any state.
+        if (requestDataSize == 0)
+        {
+            // probe accepted
+        }
+        else if (requestDataSize != 1)
+        {
+            errorCode = Type_Conflict;
+        }
+        else if (!cemiManagementWriteAllowed(_bau))
+        {
+            // These two properties bypass the read-only DeviceObject property
+            // declarations, so enforce the physical programming-mode window.
+            errorCode = Value_temp_not_writeable;
+        }
+        else
+        {
+            uint16_t candidate = _clientAddress;
+            if (propertyId == PID_DEVICE_ADDR)
+                candidate = (candidate & 0xFF00) | requestData[0];
+            else
+                candidate = (candidate & 0x00FF) | ((uint16_t)requestData[0] << 8);
+
+            // A client address equal to the server device IA creates ambiguous
+            // routing/confirmation ownership and must never be installed.
+            if (candidate == _bau.deviceObject().individualAddress())
+                errorCode = Out_Of_Range;
+            else
+                _clientAddress = candidate;
+        }
     }
-    else if (((ObjectType) objectType == OT_DEVICE) && 
-                        (propertyId == PID_SUBNET_ADDR) &&
-                        (numberOfElements == 1))
-    {
-        // Temporarily store new cEMI client address in memory
-        // We also be sent back if the client requests it again
-        _clientAddress = (_clientAddress & 0x00FF) | (requestData[0] << 8);
-        print("cEMI client address: ");
-        println(_clientAddress, HEX);
-    }            
     else
     {
         _bau.propertyValueWrite((ObjectType)objectType, objectInstance, propertyId, numberOfElements, startIndex, requestData, requestDataSize);
     }
 
-    if (numberOfElements)
+    if (errorCode == 0 && numberOfElements)
     {
         // Prepare positive response
         uint8_t responseData[7];
@@ -396,9 +449,9 @@ void CemiServer::handleMPropWrite(CemiFrame& frame, uint8_t channelId)
     else
     {
         // Prepare negative response
-        uint8_t responseData[7 + 1];
-        memcpy(responseData, frame.data(), sizeof(responseData));
-        responseData[7] = Illegal_Command; // Set cEMI error code
+        uint8_t responseData[7 + 1] = {0};
+        memcpy(responseData, frame.data(), 7);
+        responseData[7] = errorCode ? errorCode : Illegal_Command;
         responseData[5] = 0; // Set Number of elements to zero
 
         printHex(" <- error: ", &responseData[7], 1);
@@ -416,6 +469,12 @@ void CemiServer::handleMPropWrite(CemiFrame& frame, uint8_t channelId)
 
 void CemiServer::handleMReset(CemiFrame& frame, uint8_t channelId)
 {
+    // A device-management tunnel is endpoint-bound, but opening one does not
+    // authorize persistent writes.  Apply the same programming-mode policy as
+    // all other mutating cEMI management services before committing NVM.
+    if (!cemiManagementWriteAllowed(_bau))
+        return;
+
     println("M_Reset_req: sending M_Reset_ind");  
     // A real device reset does not work for USB or KNXNET/IP.
     // Thus, M_Reset_ind is NOT mandatory for USB and KNXNET/IP.

@@ -11,6 +11,7 @@ public:
     RfMediumObject();
     const uint8_t* rfDomainAddress();
     void rfDomainAddress(const uint8_t* value);
+    void masterReset(EraseCode eraseCode, uint8_t channel) override;
 
 private:
     uint8_t _rfDiagSourceAddressFilterTable[24] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,};

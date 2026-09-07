@@ -12,6 +12,7 @@ class IpParameterObject : public InterfaceObject
 {
   public:
     IpParameterObject(DeviceObject& deviceObject, Platform& platform);
+    void masterReset(EraseCode eraseCode, uint8_t channel) override;
 
   private:
     DeviceObject& _deviceObject;

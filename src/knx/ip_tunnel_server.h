@@ -30,17 +30,22 @@ class IpTunnelServer
     void dataIndicationToTunnel(CemiFrame& frame);
     bool isTunnelAddress(uint16_t addr);
     bool isSentToTunnel(uint16_t address, bool isGrpAddr);
+    /** True only for an active KNXnet/IP device-management channel. */
+    bool isConfigChannel(uint8_t channelId) const;
+    /** Mutable tunnel storage used only to encode the Core-v2 tunnelling-info DIB. */
+    KnxIpTunnelConnection* tunnelConnections() { return tunnels; }
     bool HandleIpFrame(uint8_t* buffer, uint16_t length, uint32_t& src_addr, uint16_t& src_port);
 
   private:
 
     void sendFrameToTunnel(KnxIpTunnelConnection *tunnel, CemiFrame& frame);
     void HandleConnectRequest(uint8_t* buffer, uint16_t length, uint32_t& src_addr, uint16_t& src_port);
-    void HandleConnectionStateRequest(uint8_t* buffer, uint16_t length);
-    void HandleDisconnectRequest(uint8_t* buffer, uint16_t length);
-    void HandleDescriptionRequest(uint8_t* buffer, uint16_t length);
-    void HandleDeviceConfigurationRequest(uint8_t* buffer, uint16_t length);
-    void HandleTunnelingRequest(uint8_t* buffer, uint16_t length);
+    void HandleConnectionStateRequest(uint8_t* buffer, uint16_t length, uint32_t src_addr, uint16_t src_port);
+    void HandleDisconnectRequest(uint8_t* buffer, uint16_t length, uint32_t src_addr, uint16_t src_port);
+    void HandleDescriptionRequest(uint8_t* buffer, uint16_t length, uint32_t src_addr, uint16_t src_port);
+    void HandleDeviceConfigurationRequest(uint8_t* buffer, uint16_t length, uint32_t src_addr, uint16_t src_port);
+    void HandleTunnelingRequest(uint8_t* buffer, uint16_t length, uint32_t src_addr, uint16_t src_port);
+    void HandleTunnelAcknowledgement(uint8_t* buffer, uint16_t length, uint32_t src_addr, uint16_t src_port, bool configChannel);
 
 
     KnxIpTunnelConnection tunnels[KNX_TUNNELING+KNX_TUNNELING_DEVMGMT];

@@ -75,13 +75,35 @@ Control Field 1
 */ 
 
 CemiFrame::CemiFrame(uint8_t* data, uint16_t length)
-    : _npdu(data + data[1] + NPDU_LPDU_DIFF, *this), 
-      _tpdu(data + data[1] + TPDU_LPDU_DIFF, *this), 
-      _apdu(data + data[1] + APDU_LPDU_DIFF, *this)
+    : _data(data ? data : buffer),
+      _ctrl1(buffer + CEMI_HEADER_SIZE),
+      _npdu(buffer + NPDU_LPDU_DIFF, *this),
+      _tpdu(buffer + TPDU_LPDU_DIFF, *this),
+      _apdu(buffer + APDU_LPDU_DIFF, *this)
 {
-    _data = data;
-    _ctrl1 = data + data[1] + CEMI_HEADER_SIZE;
     _length = length;
+
+    // Never derive a view from data[1] until all length-derived offsets have
+    // been checked. Management cEMI services do not carry an L_Data layout at
+    // all, so their protocol views deliberately remain on the zeroed buffer.
+    if (!validBuffer(data, length))
+    {
+        _oversized = length > MAX_CEMI_FRAME_SIZE;
+        _data = buffer;
+        _length = 0;
+        return;
+    }
+
+    MessageCode code = (MessageCode)data[0];
+    if (code == L_data_req || code == L_data_con || code == L_data_ind)
+    {
+        const uint16_t addInfoLen = data[1];
+        _ctrl1 = data + addInfoLen + CEMI_HEADER_SIZE;
+        _npdu._data = data + addInfoLen + NPDU_LPDU_DIFF;
+        _tpdu._data = data + addInfoLen + TPDU_LPDU_DIFF;
+        _apdu._data = data + addInfoLen + APDU_LPDU_DIFF;
+        _layoutValid = true;
+    }
 }
 
 CemiFrame::CemiFrame(uint16_t apduLength)
@@ -111,6 +133,7 @@ CemiFrame::CemiFrame(uint16_t apduLength)
     _ctrl1[0] |= Broadcast;
     _npdu.octetCount(apduLength);
     _length = _npdu.length() + NPDU_LPDU_DIFF;
+    _layoutValid = !_oversized;
 }
 
 CemiFrame::CemiFrame(const CemiFrame & other)
@@ -122,20 +145,49 @@ CemiFrame::CemiFrame(const CemiFrame & other)
     _ctrl1 = _data + CEMI_HEADER_SIZE; 
     _length = other._length;
     _oversized = other._oversized;
+    _layoutValid = other._layoutValid;
 
-    memcpy(_data, other._data, other.totalLenght());
+    if (_length > sizeof(buffer))
+    {
+        _length = 0;
+        _oversized = true;
+        _layoutValid = false;
+        return;
+    }
+
+    memcpy(_data, other._data, _length);
+    if (_layoutValid)
+    {
+        const uint16_t addInfoLen = _data[1];
+        _ctrl1 = _data + addInfoLen + CEMI_HEADER_SIZE;
+        _npdu._data = _data + addInfoLen + NPDU_LPDU_DIFF;
+        _tpdu._data = _data + addInfoLen + TPDU_LPDU_DIFF;
+        _apdu._data = _data + addInfoLen + APDU_LPDU_DIFF;
+    }
 }
 
 CemiFrame& CemiFrame::operator=(CemiFrame other)
 {
     _length = other._length;
     _oversized = other._oversized;
+    _layoutValid = other._layoutValid;
     _data = buffer;
     _ctrl1 = _data + CEMI_HEADER_SIZE;
-    memcpy(_data, other._data, other.totalLenght());
-    _npdu._data = _data + NPDU_LPDU_DIFF;
-    _tpdu._data = _data + TPDU_LPDU_DIFF;
-    _apdu._data = _data + APDU_LPDU_DIFF;
+    if (_length > sizeof(buffer))
+    {
+        _length = 0;
+        _oversized = true;
+        _layoutValid = false;
+        return *this;
+    }
+
+    memcpy(_data, other._data, _length);
+    const uint16_t addInfoLen = _layoutValid ? _data[1] : 0;
+    _npdu._data = _data + addInfoLen + NPDU_LPDU_DIFF;
+    _tpdu._data = _data + addInfoLen + TPDU_LPDU_DIFF;
+    _apdu._data = _data + addInfoLen + APDU_LPDU_DIFF;
+    if (_layoutValid)
+        _ctrl1 = _data + addInfoLen + CEMI_HEADER_SIZE;
     return *this;
 }
 
@@ -157,15 +209,26 @@ uint16_t CemiFrame::totalLenght() const
 
 uint16_t CemiFrame::telegramLengthtTP() const
 {
+    if (!_layoutValid)
+        return 0;
+
+    const uint8_t addInfoLen = _data[1];
+    const uint16_t overhead = (frameType() == StandardFrame ? 2U : 1U) + addInfoLen;
+    if (totalLenght() < overhead)
+        return 0;
+
     if (frameType() == StandardFrame)
-        return totalLenght() - 2; /*-AddInfo -MsgCode - only one CTRL + CRC, */
+        return totalLenght() - 2 - addInfoLen; /*-AddInfo -MsgCode - only one CTRL + CRC, */
     else
-        return totalLenght() - 1; /*-AddInfo -MsgCode + CRC, */
+        return totalLenght() - 1 - addInfoLen; /*-AddInfo -MsgCode + CRC, */
 }
 
 void CemiFrame::fillTelegramTP(uint8_t* data)
 {
     uint16_t len = telegramLengthtTP();
+
+    if (data == nullptr || len == 0)
+        return;
     
     if (frameType() == StandardFrame)
     {
@@ -186,12 +249,22 @@ void CemiFrame::fillTelegramTP(uint8_t* data)
 
 uint16_t CemiFrame::telegramLengthtRF() const
 {
-    return totalLenght() - 3;
+    if (!_layoutValid)
+        return 0;
+
+    // _ctrl1 already points past the cEMI additional-info block.  Exclude the
+    // same bytes from the raw RF length or fillTelegramRF() would copy them a
+    // second time from beyond the end of the cEMI frame.
+    const uint16_t overhead = 3U + _data[1];
+    return totalLenght() >= overhead ? totalLenght() - overhead : 0;
 }
 
 void CemiFrame::fillTelegramRF(uint8_t* data)
 {
     uint16_t len = telegramLengthtRF();
+
+    if (data == nullptr || len == 0)
+        return;
 
     // We prepare the actual KNX telegram for RF here only.
     // The packaging into blocks with CRC16 (Format based on FT3 Data Link Layer (IEC 870-5))
@@ -387,7 +460,7 @@ APDU& CemiFrame::apdu()
 
 bool CemiFrame::valid() const
 {
-    if (_oversized) // ctor could not carry the requested apduLength -> nothing was built
+    if (_oversized || !_layoutValid) // no complete L_Data layout is available
         return false;
 
     uint8_t addInfoLen = _data[1];
@@ -432,4 +505,34 @@ bool CemiFrame::valid() const
         }
 
     return true;
+}
+
+bool CemiFrame::validBuffer(const uint8_t* data, uint16_t length)
+{
+    if (data == nullptr || length == 0 || length > MAX_CEMI_FRAME_SIZE)
+        return false;
+
+    const MessageCode code = (MessageCode)data[0];
+    if (code == M_PropRead_req || code == M_PropWrite_req)
+        return length >= 7;
+
+    // The remaining management services handled (or explicitly ignored) by
+    // CemiServer only inspect their message code. They still need one byte,
+    // already guaranteed above, and remain bounded by MAX_CEMI_FRAME_SIZE.
+    if (code != L_data_req && code != L_data_con && code != L_data_ind)
+        return true;
+
+    // Complete L_Data: message/additional-info header, control/address fields,
+    // NPDU length octet and the declared APDU must all fit exactly.
+    if (length < NPDU_LPDU_DIFF + 2)
+        return false;
+
+    const uint16_t addInfoLen = data[1];
+    const uint16_t npduOffset = addInfoLen + NPDU_LPDU_DIFF;
+    if (npduOffset >= length)
+        return false;
+
+    const uint16_t apduLen = data[npduOffset];
+    const uint32_t expectedLength = (uint32_t)npduOffset + apduLen + 2U;
+    return expectedLength == length;
 }

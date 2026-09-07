@@ -16,6 +16,78 @@
 #include "knx_ip_tunneling_ack.h"
 #include "knx_ip_tunneling_request.h"
 
+namespace
+{
+bool validKnxIpEnvelope(const uint8_t* buffer, uint16_t length)
+{
+    if (buffer == nullptr || length < LEN_KNXIP_HEADER)
+        return false;
+
+    return buffer[0] == LEN_KNXIP_HEADER &&
+           buffer[1] == (uint8_t)KnxIp1_0 &&
+           getWord(buffer + 4) == length;
+}
+
+bool validHpai(const uint8_t* buffer, uint16_t length, uint16_t offset)
+{
+    return buffer != nullptr && offset <= length &&
+           length - offset >= LEN_IPHPAI &&
+           buffer[offset] == LEN_IPHPAI &&
+           buffer[offset + 1] == (uint8_t)IPV4_UDP;
+}
+
+bool hpaiAddressMatchesSource(const uint8_t* buffer, uint16_t offset, uint32_t srcAddr)
+{
+    const uint32_t claimedAddress = getInt(buffer + offset + 2);
+    return claimedAddress == 0 || claimedAddress == srcAddr;
+}
+
+bool validConnectionHeader(const uint8_t* buffer, uint16_t length)
+{
+    return buffer != nullptr && length >= LEN_KNXIP_HEADER + LEN_CH &&
+           buffer[LEN_KNXIP_HEADER] == LEN_CH;
+}
+
+bool validTunnelCemi(const uint8_t* buffer, uint16_t length)
+{
+    if (!validConnectionHeader(buffer, length) || length <= LEN_KNXIP_HEADER + LEN_CH)
+        return false;
+
+    const uint16_t cemiOffset = LEN_KNXIP_HEADER + LEN_CH;
+    return CemiFrame::validBuffer(buffer + cemiOffset, length - cemiOffset);
+}
+
+bool validDeviceConfigurationCemi(const uint8_t* buffer, uint16_t length)
+{
+    if (!validTunnelCemi(buffer, length))
+        return false;
+
+    // A DeviceConfigurationRequest carries local-management cEMI requests,
+    // never link-layer traffic or server-to-client confirmations/indications.
+    switch ((MessageCode)buffer[LEN_KNXIP_HEADER + LEN_CH])
+    {
+        case M_PropRead_req:
+        case M_PropWrite_req:
+        case M_Reset_req:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool validTunnelingCemi(const uint8_t* buffer, uint16_t length)
+{
+    return validTunnelCemi(buffer, length) &&
+           (MessageCode)buffer[LEN_KNXIP_HEADER + LEN_CH] == L_data_req;
+}
+
+bool endpointMatches(const KnxIpTunnelConnection* tunnel, uint32_t srcAddr, uint16_t srcPort, bool control)
+{
+    return tunnel != nullptr && tunnel->IpAddress == srcAddr &&
+           (control ? tunnel->PortCtrl : tunnel->PortData) == srcPort;
+}
+}
+
 IpTunnelServer::IpTunnelServer(DeviceObject& devObj, IpParameterObject& ipParam, Platform& platform, CemiServer& cemiServer) : _deviceObject(devObj),
                                                                                                                                _ipParameters(ipParam),
                                                                                                                                _platform(platform),
@@ -45,7 +117,6 @@ void IpTunnelServer::loop()
                 _platform.sendBytesUniCast(tunnels[i].IpAddress, tunnels[i].PortCtrl, discReq.data(), discReq.totalLength());
                 tunnels[i].Reset();
             }
-            break;
         }
     }
 }
@@ -267,6 +338,18 @@ bool IpTunnelServer::isTunnelAddress(uint16_t addr)
     return false;
 }
 
+bool IpTunnelServer::isConfigChannel(uint8_t channelId) const
+{
+    if (channelId == 0)
+        return false;
+
+    for (int i = 0; i < KNX_TUNNELING + KNX_TUNNELING_DEVMGMT; i++)
+        if (tunnels[i].ChannelId == channelId)
+            return tunnels[i].IsConfig;
+
+    return false;
+}
+
 bool IpTunnelServer::isSentToTunnel(uint16_t address, bool isGrpAddr)
 {
     if (isGrpAddr)
@@ -287,50 +370,89 @@ bool IpTunnelServer::isSentToTunnel(uint16_t address, bool isGrpAddr)
 
 bool IpTunnelServer::HandleIpFrame(uint8_t* buffer, uint16_t length, uint32_t& src_addr, uint16_t& src_port)
 {
+    if (!validKnxIpEnvelope(buffer, length))
+        return false;
 
     uint16_t code;
     popWord(code, buffer + 2);
     switch ((KnxIpServiceType)code)
     {
         case ConnectRequest: {
+            const uint16_t criOffset = LEN_KNXIP_HEADER + 2 * LEN_IPHPAI;
+            if (length < criOffset + 2 ||
+                !validHpai(buffer, length, LEN_KNXIP_HEADER) ||
+                !validHpai(buffer, length, LEN_KNXIP_HEADER + LEN_IPHPAI) ||
+                !hpaiAddressMatchesSource(buffer, LEN_KNXIP_HEADER, src_addr) ||
+                !hpaiAddressMatchesSource(buffer, LEN_KNXIP_HEADER + LEN_IPHPAI, src_addr))
+                break;
+
+            const uint8_t criLength = buffer[criOffset];
+            const ConnectionType connectionType = (ConnectionType)buffer[criOffset + 1];
+            const bool knownLengthValid =
+                (connectionType == TUNNEL_CONNECTION && criLength == LEN_CRI) ||
+                (connectionType == DEVICE_MGMT_CONNECTION && criLength == 2);
+            const bool unknownType = connectionType != TUNNEL_CONNECTION &&
+                                     connectionType != DEVICE_MGMT_CONNECTION;
+            if ((!knownLengthValid && !(unknownType && criLength >= 2)) ||
+                (uint32_t)criOffset + criLength != length)
+                break;
+
             HandleConnectRequest(buffer, length, src_addr, src_port);
             break;
         }
 
         case ConnectionStateRequest: {
-            HandleConnectionStateRequest(buffer, length);
+            if (length != LEN_KNXIP_HEADER + 2 + LEN_IPHPAI ||
+                !validHpai(buffer, length, LEN_KNXIP_HEADER + 2) ||
+                !hpaiAddressMatchesSource(buffer, LEN_KNXIP_HEADER + 2, src_addr))
+                break;
+            HandleConnectionStateRequest(buffer, length, src_addr, src_port);
             break;
         }
 
         case DisconnectRequest: {
-            HandleDisconnectRequest(buffer, length);
+            if (length != LEN_KNXIP_HEADER + 2 + LEN_IPHPAI ||
+                !validHpai(buffer, length, LEN_KNXIP_HEADER + 2) ||
+                !hpaiAddressMatchesSource(buffer, LEN_KNXIP_HEADER + 2, src_addr))
+                break;
+            HandleDisconnectRequest(buffer, length, src_addr, src_port);
             break;
         }
 
         case DescriptionRequest: {
-            HandleDescriptionRequest(buffer, length);
+            if (length != LEN_KNXIP_HEADER + LEN_IPHPAI ||
+                !validHpai(buffer, length, LEN_KNXIP_HEADER) ||
+                !hpaiAddressMatchesSource(buffer, LEN_KNXIP_HEADER, src_addr))
+                break;
+            HandleDescriptionRequest(buffer, length, src_addr, src_port);
             break;
         }
 
         case DeviceConfigurationRequest: {
-            HandleDeviceConfigurationRequest(buffer, length);
+            if (!validDeviceConfigurationCemi(buffer, length))
+                break;
+            HandleDeviceConfigurationRequest(buffer, length, src_addr, src_port);
             break;
         }
 
         case TunnelingRequest: {
-            HandleTunnelingRequest(buffer, length);
+            if (!validTunnelingCemi(buffer, length))
+                break;
+            HandleTunnelingRequest(buffer, length, src_addr, src_port);
             break;
         }
 
         case DeviceConfigurationAck: {
-            // TOOD nothing to do now
-            // println("got Ack");
+            if (!validConnectionHeader(buffer, length) || length != LEN_KNXIP_HEADER + LEN_CH)
+                break;
+            HandleTunnelAcknowledgement(buffer, length, src_addr, src_port, true);
             break;
         }
 
         case TunnelingAck: {
-            // TOOD nothing to do now
-            // println("got Ack");
+            if (!validConnectionHeader(buffer, length) || length != LEN_KNXIP_HEADER + LEN_CH)
+                break;
+            HandleTunnelAcknowledgement(buffer, length, src_addr, src_port, false);
             break;
         }
         default:
@@ -343,6 +465,8 @@ bool IpTunnelServer::HandleIpFrame(uint8_t* buffer, uint16_t length, uint32_t& s
 void IpTunnelServer::HandleConnectRequest(uint8_t* buffer, uint16_t length, uint32_t& src_addr, uint16_t& src_port)
 {
     KnxIpConnectRequest connRequest(buffer, length);
+    const uint16_t responsePort = connRequest.hpaiCtrl().ipPortNumber() ?
+                                      connRequest.hpaiCtrl().ipPortNumber() : src_port;
 #ifdef KNX_LOG_TUNNELING
     println("Got Connect Request!");
     switch (connRequest.cri().type())
@@ -395,7 +519,7 @@ void IpTunnelServer::HandleConnectRequest(uint8_t* buffer, uint16_t length, uint
         println("Only Tunnel/DeviceMgmt Connection ist supported!");
 #endif
         KnxIpConnectResponse connRes(0x00, E_CONNECTION_TYPE);
-        _platform.sendBytesUniCast(connRequest.hpaiCtrl().ipAddress(), connRequest.hpaiCtrl().ipPortNumber(), connRes.data(), connRes.totalLength());
+        _platform.sendBytesUniCast(src_addr, responsePort, connRes.data(), connRes.totalLength());
         return;
     }
 
@@ -406,18 +530,24 @@ void IpTunnelServer::HandleConnectRequest(uint8_t* buffer, uint16_t length, uint
         println("Only LinkLayer ist supported!");
 #endif
         KnxIpConnectResponse connRes(0x00, E_TUNNELING_LAYER);
-        _platform.sendBytesUniCast(connRequest.hpaiCtrl().ipAddress(), connRequest.hpaiCtrl().ipPortNumber(), connRes.data(), connRes.totalLength());
+        _platform.sendBytesUniCast(src_addr, responsePort, connRes.data(), connRes.totalLength());
         return;
     }
 
     // data preparation
 
-    uint32_t srcIP = connRequest.hpaiCtrl().ipAddress() ? connRequest.hpaiCtrl().ipAddress() : src_addr;
+    // Bind the connection to the packet's actual source IP. Trusting a claimed
+    // HPAI address lets a requester create a tunnel assigned to a third party.
+    uint32_t srcIP = src_addr;
     uint16_t srcPort = connRequest.hpaiCtrl().ipPortNumber() ? connRequest.hpaiCtrl().ipPortNumber() : src_port;
 
     // read current elements in PID_ADDITIONAL_INDIVIDUAL_ADDRESSES
     uint16_t propCount = 0;
     _ipParameters.readPropertyLength(PID_ADDITIONAL_INDIVIDUAL_ADDRESSES, propCount);
+    // Keep the generated fallback alive until the selected tunnel address is
+    // consumed below.  A buffer declared in the else block would leave
+    // `addresses` dangling as soon as that block ended.
+    uint8_t fallbackAddresses[KNX_TUNNELING * 2] = {0};
     const uint8_t* addresses;
     if (propCount == KNX_TUNNELING)
     {
@@ -425,15 +555,14 @@ void IpTunnelServer::HandleConnectRequest(uint8_t* buffer, uint16_t length, uint
     }
     else // no tunnel PA configured, that means device is unconfigured and has 15.15.0
     {
-        uint8_t addrbuffer[KNX_TUNNELING * 2];
-        addresses = (uint8_t*)addrbuffer;
+        addresses = fallbackAddresses;
         for (int i = 0; i < KNX_TUNNELING; i++)
         {
-            addrbuffer[i * 2 + 1] = i + 1;
-            addrbuffer[i * 2] = _deviceObject.individualAddress() / 0x0100;
+            fallbackAddresses[i * 2 + 1] = i + 1;
+            fallbackAddresses[i * 2] = _deviceObject.individualAddress() / 0x0100;
         }
         uint8_t count = KNX_TUNNELING;
-        _ipParameters.writeProperty(PID_ADDITIONAL_INDIVIDUAL_ADDRESSES, 1, addrbuffer, count);
+        _ipParameters.writeProperty(PID_ADDITIONAL_INDIVIDUAL_ADDRESSES, 1, fallbackAddresses, count);
 #ifdef KNX_LOG_TUNNELING
         println("no Tunnel-PAs configured, using own subnet");
 #endif
@@ -616,7 +745,7 @@ void IpTunnelServer::HandleConnectRequest(uint8_t* buffer, uint16_t length, uint
     {
         println("no free tunnel availible");
         KnxIpConnectResponse connRes(0x00, E_NO_MORE_CONNECTIONS);
-        _platform.sendBytesUniCast(connRequest.hpaiCtrl().ipAddress(), connRequest.hpaiCtrl().ipPortNumber(), connRes.data(), connRes.totalLength());
+        _platform.sendBytesUniCast(src_addr, responsePort, connRes.data(), connRes.totalLength());
         return;
     }
 
@@ -626,7 +755,7 @@ void IpTunnelServer::HandleConnectRequest(uint8_t* buffer, uint16_t length, uint
     {
         _lastChannelId++;
         channelIdInUse = false;
-        for (int x = 0; x < KNX_TUNNELING; x++)
+        for (int x = 0; x < KNX_TUNNELING + KNX_TUNNELING_DEVMGMT; x++)
             if (tunnels[x].ChannelId == _lastChannelId)
                 channelIdInUse = true;
     } while (channelIdInUse);
@@ -677,7 +806,7 @@ void IpTunnelServer::HandleConnectRequest(uint8_t* buffer, uint16_t length, uint
     _platform.sendBytesUniCast(tun->IpAddress, tun->PortCtrl, connRes.data(), connRes.totalLength());
 }
 
-void IpTunnelServer::HandleConnectionStateRequest(uint8_t* buffer, uint16_t length)
+void IpTunnelServer::HandleConnectionStateRequest(uint8_t* buffer, uint16_t length, uint32_t src_addr, uint16_t src_port)
 {
     KnxIpStateRequest stateRequest(buffer, length);
 
@@ -698,9 +827,12 @@ void IpTunnelServer::HandleConnectionStateRequest(uint8_t* buffer, uint16_t leng
         println(stateRequest.channelId());
 #endif
         KnxIpStateResponse stateRes(0x00, E_CONNECTION_ID);
-        _platform.sendBytesUniCast(stateRequest.hpaiCtrl().ipAddress(), stateRequest.hpaiCtrl().ipPortNumber(), stateRes.data(), stateRes.totalLength());
+        _platform.sendBytesUniCast(src_addr, src_port, stateRes.data(), stateRes.totalLength());
         return;
     }
+
+    if (!endpointMatches(tun, src_addr, src_port, true))
+        return;
 
     // TODO check knx connection!
     // if no connection return E_KNX_CONNECTION
@@ -709,10 +841,10 @@ void IpTunnelServer::HandleConnectionStateRequest(uint8_t* buffer, uint16_t leng
 
     tun->lastHeartbeat = millis();
     KnxIpStateResponse stateRes(tun->ChannelId, E_NO_ERROR);
-    _platform.sendBytesUniCast(stateRequest.hpaiCtrl().ipAddress(), stateRequest.hpaiCtrl().ipPortNumber(), stateRes.data(), stateRes.totalLength());
+    _platform.sendBytesUniCast(tun->IpAddress, tun->PortCtrl, stateRes.data(), stateRes.totalLength());
 }
 
-void IpTunnelServer::HandleDisconnectRequest(uint8_t* buffer, uint16_t length)
+void IpTunnelServer::HandleDisconnectRequest(uint8_t* buffer, uint16_t length, uint32_t src_addr, uint16_t src_port)
 {
     KnxIpDisconnectRequest discReq(buffer, length);
 
@@ -738,23 +870,28 @@ void IpTunnelServer::HandleDisconnectRequest(uint8_t* buffer, uint16_t length)
         println(discReq.channelId());
 #endif
         KnxIpDisconnectResponse discRes(0x00, E_CONNECTION_ID);
-        _platform.sendBytesUniCast(discReq.hpaiCtrl().ipAddress(), discReq.hpaiCtrl().ipPortNumber(), discRes.data(), discRes.totalLength());
+        _platform.sendBytesUniCast(src_addr, src_port, discRes.data(), discRes.totalLength());
         return;
     }
 
+    if (!endpointMatches(tun, src_addr, src_port, true))
+        return;
+
     KnxIpDisconnectResponse discRes(tun->ChannelId, E_NO_ERROR);
-    _platform.sendBytesUniCast(discReq.hpaiCtrl().ipAddress(), discReq.hpaiCtrl().ipPortNumber(), discRes.data(), discRes.totalLength());
+    _platform.sendBytesUniCast(tun->IpAddress, tun->PortCtrl, discRes.data(), discRes.totalLength());
     tun->Reset();
 }
 
-void IpTunnelServer::HandleDescriptionRequest(uint8_t* buffer, uint16_t length)
+void IpTunnelServer::HandleDescriptionRequest(uint8_t* buffer, uint16_t length, uint32_t src_addr, uint16_t src_port)
 {
     KnxIpDescriptionRequest descReq(buffer, length);
     KnxIpDescriptionResponse descRes(_ipParameters, _deviceObject);
-    _platform.sendBytesUniCast(descReq.hpaiCtrl().ipAddress(), descReq.hpaiCtrl().ipPortNumber(), descRes.data(), descRes.totalLength());
+    const uint16_t responsePort = descReq.hpaiCtrl().ipPortNumber() ?
+                                      descReq.hpaiCtrl().ipPortNumber() : src_port;
+    _platform.sendBytesUniCast(src_addr, responsePort, descRes.data(), descRes.totalLength());
 }
 
-void IpTunnelServer::HandleDeviceConfigurationRequest(uint8_t* buffer, uint16_t length)
+void IpTunnelServer::HandleDeviceConfigurationRequest(uint8_t* buffer, uint16_t length, uint32_t src_addr, uint16_t src_port)
 {
     KnxIpConfigRequest confReq(buffer, length);
 
@@ -772,8 +909,41 @@ void IpTunnelServer::HandleDeviceConfigurationRequest(uint8_t* buffer, uint16_t 
     {
         print("Channel ID nicht gefunden: ");
         println(confReq.connectionHeader().channelId());
-        KnxIpStateResponse stateRes(0x00, E_CONNECTION_ID);
-        _platform.sendBytesUniCast(0, 0, stateRes.data(), stateRes.totalLength());
+        KnxIpTunnelingAck tunnAck;
+        tunnAck.serviceTypeIdentifier(DeviceConfigurationAck);
+        tunnAck.connectionHeader().length(LEN_CH);
+        tunnAck.connectionHeader().channelId(confReq.connectionHeader().channelId());
+        tunnAck.connectionHeader().sequenceCounter(confReq.connectionHeader().sequenceCounter());
+        tunnAck.connectionHeader().status(E_CONNECTION_ID);
+        _platform.sendBytesUniCast(src_addr, src_port, tunnAck.data(), tunnAck.totalLength());
+        return;
+    }
+
+    if (!endpointMatches(tun, src_addr, src_port, false))
+        return;
+
+    const uint8_t sequence = confReq.connectionHeader().sequenceCounter();
+    if (sequence == tun->SequenceCounter_R)
+    {
+        KnxIpTunnelingAck tunnAck;
+        tunnAck.serviceTypeIdentifier(DeviceConfigurationAck);
+        tunnAck.connectionHeader().length(LEN_CH);
+        tunnAck.connectionHeader().channelId(tun->ChannelId);
+        tunnAck.connectionHeader().sequenceCounter(sequence);
+        tunnAck.connectionHeader().status(E_NO_ERROR);
+        _platform.sendBytesUniCast(tun->IpAddress, tun->PortData, tunnAck.data(), tunnAck.totalLength());
+        return;
+    }
+
+    if ((uint8_t)(sequence - 1) != tun->SequenceCounter_R)
+    {
+        KnxIpTunnelingAck tunnAck;
+        tunnAck.serviceTypeIdentifier(DeviceConfigurationAck);
+        tunnAck.connectionHeader().length(LEN_CH);
+        tunnAck.connectionHeader().channelId(tun->ChannelId);
+        tunnAck.connectionHeader().sequenceCounter(sequence);
+        tunnAck.connectionHeader().status(E_SEQUENCE_NUMBER);
+        _platform.sendBytesUniCast(tun->IpAddress, tun->PortData, tunnAck.data(), tunnAck.totalLength());
         return;
     }
 
@@ -785,11 +955,12 @@ void IpTunnelServer::HandleDeviceConfigurationRequest(uint8_t* buffer, uint16_t 
     tunnAck.connectionHeader().status(E_NO_ERROR);
     _platform.sendBytesUniCast(tun->IpAddress, tun->PortData, tunnAck.data(), tunnAck.totalLength());
 
+    tun->SequenceCounter_R = sequence;
     tun->lastHeartbeat = millis();
     _cemiServer.frameReceived(confReq.frame(), tun->ChannelId);
 }
 
-void IpTunnelServer::HandleTunnelingRequest(uint8_t* buffer, uint16_t length)
+void IpTunnelServer::HandleTunnelingRequest(uint8_t* buffer, uint16_t length, uint32_t src_addr, uint16_t src_port)
 {
     KnxIpTunnelingRequest tunnReq(buffer, length);
 
@@ -809,10 +980,17 @@ void IpTunnelServer::HandleTunnelingRequest(uint8_t* buffer, uint16_t length)
         print("Channel ID nicht gefunden: ");
         println(tunnReq.connectionHeader().channelId());
 #endif
-        KnxIpStateResponse stateRes(0x00, E_CONNECTION_ID);
-        _platform.sendBytesUniCast(0, 0, stateRes.data(), stateRes.totalLength());
+        KnxIpTunnelingAck tunnAck;
+        tunnAck.connectionHeader().length(LEN_CH);
+        tunnAck.connectionHeader().channelId(tunnReq.connectionHeader().channelId());
+        tunnAck.connectionHeader().sequenceCounter(tunnReq.connectionHeader().sequenceCounter());
+        tunnAck.connectionHeader().status(E_CONNECTION_ID);
+        _platform.sendBytesUniCast(src_addr, src_port, tunnAck.data(), tunnAck.totalLength());
         return;
     }
+
+    if (!endpointMatches(tun, src_addr, src_port, false))
+        return;
 
     uint8_t sequence = tunnReq.connectionHeader().sequenceCounter();
     if (sequence == tun->SequenceCounter_R)
@@ -839,7 +1017,12 @@ void IpTunnelServer::HandleTunnelingRequest(uint8_t* buffer, uint16_t length)
         print(" expected ");
         println((uint8_t)(tun->SequenceCounter_R + 1));
 #endif
-        // Dont handle it
+        KnxIpTunnelingAck tunnAck;
+        tunnAck.connectionHeader().length(LEN_CH);
+        tunnAck.connectionHeader().channelId(tun->ChannelId);
+        tunnAck.connectionHeader().sequenceCounter(sequence);
+        tunnAck.connectionHeader().status(E_SEQUENCE_NUMBER);
+        _platform.sendBytesUniCast(tun->IpAddress, tun->PortData, tunnAck.data(), tunnAck.totalLength());
         return;
     }
 
@@ -852,10 +1035,39 @@ void IpTunnelServer::HandleTunnelingRequest(uint8_t* buffer, uint16_t length)
 
     tun->SequenceCounter_R = tunnReq.connectionHeader().sequenceCounter();
 
-    if (tunnReq.frame().sourceAddress() == 0)
-        tunnReq.frame().sourceAddress(tun->IndividualAddress);
+    // The data endpoint and channel above authenticate this tunnel, not the
+    // source address carried by its client-provided cEMI frame.  Always bind
+    // the frame to the IA assigned to that tunnel so a client cannot
+    // impersonate another KNX participant with a non-zero source address.
+    tunnReq.frame().sourceAddress(tun->IndividualAddress);
 
     _cemiServer.frameReceived(tunnReq.frame(), tun->ChannelId);
+}
+
+void IpTunnelServer::HandleTunnelAcknowledgement(uint8_t* buffer, uint16_t length,
+                                                 uint32_t src_addr, uint16_t src_port,
+                                                 bool configChannel)
+{
+    KnxIpTunnelingAck ack(buffer, length);
+    KnxIpTunnelConnection* tun = nullptr;
+    const int first = configChannel ? KNX_TUNNELING : 0;
+    const int last = configChannel ? KNX_TUNNELING + KNX_TUNNELING_DEVMGMT : KNX_TUNNELING;
+    for (int i = first; i < last; i++)
+    {
+        if (tunnels[i].ChannelId == ack.connectionHeader().channelId())
+        {
+            tun = &tunnels[i];
+            break;
+        }
+    }
+
+    // ACKs never create state. Accept them only from the endpoint bound at
+    // connect time and only for the most recently transmitted sequence.
+    if (!endpointMatches(tun, src_addr, src_port, false) ||
+        ack.connectionHeader().sequenceCounter() != (uint8_t)(tun->SequenceCounter_S - 1))
+        return;
+
+    tun->lastHeartbeat = millis();
 }
 
 #endif

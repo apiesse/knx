@@ -18,6 +18,29 @@
 #include <stdio.h>
 #include <string.h>
 
+namespace
+{
+bool rfPacketLengthFitsMedium(uint16_t telegramLength, uint16_t& packetLength)
+{
+    // The RF L-field contains the nine bytes of block-1 payload plus the
+    // checksum-free KNX telegram and is itself only one octet wide.
+    const uint16_t lField = 9U + telegramLength;
+    if (telegramLength == 0 || lField > 0xFFU)
+        return false;
+
+    const uint16_t blockCount = (telegramLength + 15U) / 16U;
+    packetLength = 12U + telegramLength + 2U * blockCount;
+
+#if defined(DeviceFamily_CC13X0)
+    // The current CC13X0 TX command is configured for packets up to 255 bytes.
+    if (packetLength > 255U)
+        return false;
+#endif
+
+    return true;
+}
+}
+
 void RfDataLinkLayer::loop()
 {
     if (!_enabled)
@@ -28,6 +51,24 @@ void RfDataLinkLayer::loop()
 
 bool RfDataLinkLayer::sendFrame(CemiFrame& frame)
 {
+    // fillTelegramRF() assumes a complete L_Data layout and subtracts fixed
+    // RF overhead. Rejecting here prevents an invalid/oversized cEMI frame
+    // from turning that subtraction into a large out-of-bounds copy.
+    if (!frame.valid())
+    {
+        dataConReceived(frame, false);
+        return false;
+    }
+
+    uint16_t packetLength = 0;
+    if (!rfPacketLengthFitsMedium(frame.telegramLengthtRF(), packetLength))
+    {
+        // Do not enqueue or positively confirm a frame whose L-field would
+        // wrap, or that this physical layer is known to be unable to send.
+        dataConReceived(frame, false);
+        return false;
+    }
+
     // If no serial number of domain address was set,
     // use our own SN/DoA
     if (frame.rfSerialOrDoA() == nullptr)
@@ -311,14 +352,14 @@ void RfDataLinkLayer::addFrameTxQueue(CemiFrame& frame)
     _tx_queue_frame_t* tx_frame = new _tx_queue_frame_t;
 
     uint16_t length = frame.telegramLengthtRF(); // Just the pure KNX telegram from CTRL field until end of APDU
-    uint8_t nrFullBlocks = length / 16;          // Number of full (16 bytes) RF blocks required
-    uint8_t bytesLeft = length % 16;             // Remaining bytes of the last packet
+    uint16_t blockCount = (length + 15U) / 16U;  // Every started block carries its own CRC16
 
     // Calculate total number of bytes required to store the complete raw RF frame
     // Block1 always requires 12 bytes including Length and CRC
-    // Each full block has 16 bytes payload plus 2 bytes CRC
-    // Add remaining bytes of the last block and add 2 bytes for CRC
-    uint16_t totalLength = 12 + (nrFullBlocks * 18) + bytesLeft + 2;
+    // and every (possibly partial) telegram block adds a two-byte CRC.  Using
+    // ceil(length/16) avoids adding a phantom block when length is a multiple
+    // of 16, which must remain identical to PACKET_SIZE(data[0]).
+    uint16_t totalLength = 12U + length + 2U * blockCount;
 
     tx_frame->length = totalLength;
     tx_frame->data = new uint8_t[tx_frame->length];

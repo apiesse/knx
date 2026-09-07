@@ -59,6 +59,8 @@
 // KNX Data Secure Options
 // Define via a compiler -D flag if required
 // #define USE_DATASECURE
+// USE_DATASECURE additionally requires KNX_DATASECURE_FDSK_BYTES to expand to
+// exactly 16 comma-separated, device-unique bytes supplied by provisioning.
 
 // option to have GroupObjects (KO in German) use 8 bytes mangement information RAM instead of 19 bytes
 // see knx-demo-small-go for example

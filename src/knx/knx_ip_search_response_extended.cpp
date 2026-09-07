@@ -122,9 +122,11 @@ void KnxIpSearchResponseExtended::setKnxAddresses(IpParameterObject& parameters,
     uint16_t length = 0;
     parameters.readPropertyLength(PID_ADDITIONAL_INDIVIDUAL_ADDRESSES, length);
 
-    const uint8_t *addresses = parameters.propertyData(PID_ADDITIONAL_INDIVIDUAL_ADDRESSES);
+    const uint8_t *addresses = length > 0 ?
+                                   parameters.propertyData(PID_ADDITIONAL_INDIVIDUAL_ADDRESSES) : nullptr;
+    const uint16_t addressCount = addresses != nullptr ? length : 0;
 
-    for(int i = 0; i < length; i++)
+    for(uint16_t i = 0; i < addressCount; i++)
     {
         uint16_t additional = 0;
         popWord(additional, addresses + i*2);
@@ -142,24 +144,28 @@ void KnxIpSearchResponseExtended::setTunnelingInfo(IpParameterObject& parameters
     _tunnelInfo.code(TUNNELING_INFO);
     _tunnelInfo.apduLength(254); //FIXME where to get from
 
-    uint16_t length = 0;
-    parameters.readPropertyLength(PID_ADDITIONAL_INDIVIDUAL_ADDRESSES, length);
-    
-    const uint8_t *addresses;
-    if(length == KNX_TUNNELING)
+    uint16_t configuredCount = 0;
+    parameters.readPropertyLength(PID_ADDITIONAL_INDIVIDUAL_ADDRESSES, configuredCount);
+
+    // The configured array is usable only when all tunnel slots are present.
+    // Keep fallback storage alive for the entire encoder and use the same
+    // effective count that the response allocator uses.
+    uint8_t fallbackAddresses[KNX_TUNNELING * 2] = {0};
+    const uint8_t* addresses = configuredCount == KNX_TUNNELING ?
+                                   parameters.propertyData(PID_ADDITIONAL_INDIVIDUAL_ADDRESSES) : nullptr;
+    uint16_t addressCount = configuredCount;
+    if (addresses == nullptr)
     {
-        addresses = parameters.propertyData(PID_ADDITIONAL_INDIVIDUAL_ADDRESSES);
-    } else {
-        uint8_t addrbuffer[KNX_TUNNELING*2];
-        addresses = (uint8_t*)addrbuffer;
+        addressCount = KNX_TUNNELING;
+        addresses = fallbackAddresses;
         for(int i = 0; i < KNX_TUNNELING; i++)
         {
-            addrbuffer[i*2+1] = i+1;
-            addrbuffer[i*2] = deviceObject.individualAddress() / 0x0100;
+            fallbackAddresses[i * 2 + 1] = i + 1;
+            fallbackAddresses[i * 2] = deviceObject.individualAddress() / 0x0100;
         }
     }
 
-    for(int i = 0; i < length; i++)
+    for(uint16_t i = 0; i < addressCount; i++)
     {
         uint16_t additional = 0;
         popWord(additional, addresses + i*2);
@@ -167,7 +173,7 @@ void KnxIpSearchResponseExtended::setTunnelingInfo(IpParameterObject& parameters
 
         uint8_t doubleCounter = 0;
         bool used = false;
-        for(int i = 0; i < KNX_TUNNELING; i++)
+        for(int i = 0; tunnels != nullptr && i < KNX_TUNNELING; i++)
         {
             if(tunnels[i].IndividualAddress == additional)
             {

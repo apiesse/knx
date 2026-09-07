@@ -9,8 +9,19 @@
 #include "callback_property.h"
 #include "function_property.h"
 
-// Our FDSK. It is never changed from ETS. This is the permanent default tool key that is restored on every factory reset of the device.
-const uint8_t SecurityInterfaceObject::_fdsk[] = { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F };
+/* Data Secure must never silently ship with a library-wide key. Products enabling
+   USE_DATASECURE provide exactly 16 device-unique bytes from their controlled
+   provisioning build, e.g. -DKNX_DATASECURE_FDSK_BYTES=... . */
+#ifndef KNX_DATASECURE_FDSK_BYTES
+#error "USE_DATASECURE requires a device-unique 16-byte KNX_DATASECURE_FDSK_BYTES initializer"
+#endif
+namespace
+{
+constexpr uint8_t kProvisionedFdsk[] = { KNX_DATASECURE_FDSK_BYTES };
+static_assert(sizeof(kProvisionedFdsk) == 16,
+              "KNX_DATASECURE_FDSK_BYTES must contain exactly 16 bytes");
+}
+const uint8_t SecurityInterfaceObject::_fdsk[] = { KNX_DATASECURE_FDSK_BYTES };
 uint8_t SecurityInterfaceObject::_secReport[] = { 0x00, 0x00, 0x00 };
 uint8_t SecurityInterfaceObject::_secReportCtrl[] = { 0x00, 0x00, 0x00 };
 
@@ -36,6 +47,12 @@ SecurityInterfaceObject::SecurityInterfaceObject()
         new FunctionProperty<SecurityInterfaceObject>(this, PID_SECURITY_MODE,
             // Command Callback of PID_SECURITY_MODE
             [](SecurityInterfaceObject* obj, uint8_t* data, uint8_t length, uint8_t* resultData, uint8_t& resultLength) -> void {
+                if (data == nullptr || length != 3)
+                {
+                    resultData[0] = ReturnCodes::DataVoid;
+                    resultLength = 1;
+                    return;
+                }
                 uint8_t serviceId = data[1] & 0xff;
                 if (serviceId != 0)
                 {
@@ -43,26 +60,26 @@ SecurityInterfaceObject::SecurityInterfaceObject()
                     resultLength = 1;
                     return;
                 }
-                if (length == 3)
+                uint8_t mode = data[2];
+                if (mode > 1)
                 {
-                    uint8_t mode = data[2];
-                    if (mode > 1)
-                    {
-                        resultData[0] = ReturnCodes::DataVoid;
-                        resultLength = 1;
-                        return;
-                    }
-                    obj->setSecurityMode(mode == 1);
-                    resultData[0] = ReturnCodes::Success;
-                    resultData[1] = serviceId;
-                    resultLength = 2;
+                    resultData[0] = ReturnCodes::DataVoid;
+                    resultLength = 1;
                     return;
                 }
-                resultData[0] = ReturnCodes::GenericError;
-                resultLength = 1;
+                obj->setSecurityMode(mode == 1);
+                resultData[0] = ReturnCodes::Success;
+                resultData[1] = serviceId;
+                resultLength = 2;
             },
             // State Callback of PID_SECURITY_MODE
             [](SecurityInterfaceObject* obj, uint8_t* data, uint8_t length, uint8_t* resultData, uint8_t& resultLength) -> void {
+                if (data == nullptr || length != 2)
+                {
+                    resultData[0] = ReturnCodes::DataVoid;
+                    resultLength = 1;
+                    return;
+                }
                 uint8_t serviceId = data[1] & 0xff;
                 if (serviceId != 0)
                 {
@@ -70,20 +87,14 @@ SecurityInterfaceObject::SecurityInterfaceObject()
                     resultLength = 1;
                     return;
                 }
-                if (length == 2)
-                {
-                    resultData[0] = ReturnCodes::Success;
-                    resultData[1] = serviceId;
-                    resultData[2] = obj->isSecurityModeEnabled() ? 1 : 0;
-                    resultLength = 3;
-                    return;
-                }
-                resultData[0] = ReturnCodes::GenericError;
-                resultLength = 1;
+                resultData[0] = ReturnCodes::Success;
+                resultData[1] = serviceId;
+                resultData[2] = obj->isSecurityModeEnabled() ? 1 : 0;
+                resultLength = 3;
             }),
-        new DataProperty( PID_P2P_KEY_TABLE, true, PDT_GENERIC_20, 1, ReadLv3 | WriteLv0 ), // written by ETS
-        new DataProperty( PID_GRP_KEY_TABLE, true, PDT_GENERIC_18, 50, ReadLv3 | WriteLv0 ), // written by ETS
-        new DataProperty( PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE, true, PDT_GENERIC_08, 32, ReadLv3 | WriteLv0 ), // written by ETS
+        new DataProperty( PID_P2P_KEY_TABLE, true, PDT_GENERIC_20, 1, ReadLv0 | WriteLv0 ), // written by ETS
+        new DataProperty( PID_GRP_KEY_TABLE, true, PDT_GENERIC_18, 50, ReadLv0 | WriteLv0 ), // written by ETS
+        new DataProperty( PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE, true, PDT_GENERIC_08, 32, ReadLv0 | WriteLv0 ), // written by ETS
         new FunctionProperty<SecurityInterfaceObject>(this, PID_SECURITY_FAILURES_LOG,
             // Command Callback of PID_SECURITY_FAILURES_LOG
             [](SecurityInterfaceObject* obj, uint8_t* data, uint8_t length, uint8_t* resultData, uint8_t& resultLength) -> void {
@@ -150,15 +161,15 @@ SecurityInterfaceObject::SecurityInterfaceObject()
                 resultData[0] = ReturnCodes::GenericError;
                 resultLength = 1;
             }),
-        new DataProperty( PID_TOOL_KEY, true, PDT_GENERIC_16, 1, ReadLv3 | WriteLv0, (uint8_t*) _fdsk ), // default is FDSK // ETS changes this property during programming from FDSK to some random key!
+        new DataProperty( PID_TOOL_KEY, true, PDT_GENERIC_16, 1, ReadLv0 | WriteLv0, (uint8_t*) _fdsk ), // default is FDSK // ETS changes this property during programming from FDSK to some random key!
         new DataProperty( PID_SECURITY_REPORT, true, PDT_BITSET8, 1, ReadLv3 | WriteLv0, _secReport ), // Not implemented
         new DataProperty( PID_SECURITY_REPORT_CONTROL, true, PDT_BINARY_INFORMATION, 1, ReadLv3 | WriteLv0, _secReportCtrl ), // Not implemented
-        new DataProperty( PID_SEQUENCE_NUMBER_SENDING, true, PDT_GENERIC_06, 1, ReadLv3 | WriteLv0 ), // Updated by our device accordingly
-        new DataProperty( PID_ZONE_KEY_TABLE, true, PDT_GENERIC_19, 1, ReadLv3 | WriteLv0 ), // written by ETS
+        new DataProperty( PID_SEQUENCE_NUMBER_SENDING, true, PDT_GENERIC_06, 1, ReadLv0 | WriteLv0 ), // Updated by our device accordingly
+        new DataProperty( PID_ZONE_KEY_TABLE, true, PDT_GENERIC_19, 1, ReadLv0 | WriteLv0 ), // written by ETS
         new DataProperty( PID_GO_SECURITY_FLAGS, true, PDT_GENERIC_01, 256, ReadLv3 | WriteLv0 ), // written by ETS
         new DataProperty( PID_ROLE_TABLE, true, PDT_GENERIC_01, 1, ReadLv3 | WriteLv0 ), // written by ETS
         new DataProperty( PID_ERROR_CODE, false, PDT_ENUM8, 1, ReadLv3 | WriteLv0, (uint8_t)E_NO_FAULT),
-        new DataProperty( PID_TOOL_SEQUENCE_NUMBER_SENDING, true, PDT_GENERIC_06, 1, ReadLv3 | WriteLv0 ) // Updated by our device accordingly (non-standardized!)
+        new DataProperty( PID_TOOL_SEQUENCE_NUMBER_SENDING, true, PDT_GENERIC_06, 1, ReadLv0 | WriteLv0 ) // Updated by our device accordingly (non-standardized!)
     };
     initializeProperties(sizeof(properties), properties);
 }
@@ -351,13 +362,42 @@ void SecurityInterfaceObject::errorCode(ErrorCode errorCode)
 
 void SecurityInterfaceObject::masterReset(EraseCode eraseCode, uint8_t channel)
 {
-    if (eraseCode == FactoryReset)
+    (void)channel;
+    if (eraseCode != FactoryReset && eraseCode != FactoryResetWithoutIA)
+        return;
+
+    /* Keep the element counts long enough for the following writeMemory() to
+       overwrite every previously persisted secret with zeroes. The unloaded
+       state makes the cleared tables unusable until ETS downloads them again. */
+    static const PropertyID sensitiveProperties[] = {
+        PID_P2P_KEY_TABLE,
+        PID_GRP_KEY_TABLE,
+        PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE,
+        PID_SECURITY_REPORT,
+        PID_SECURITY_REPORT_CONTROL,
+        PID_SEQUENCE_NUMBER_SENDING,
+        PID_ZONE_KEY_TABLE,
+        PID_GO_SECURITY_FLAGS,
+        PID_ROLE_TABLE,
+        PID_TOOL_SEQUENCE_NUMBER_SENDING,
+    };
+    uint8_t zeroElement[20] = {};
+    for (PropertyID propertyId : sensitiveProperties)
     {
-        // TODO handle different erase codes
-        println("Factory reset of security interface object requested.");
-        setSecurityMode(false);
-        property(PID_TOOL_KEY)->write(1, 1, _fdsk);
+        Property* sensitive = property(propertyId);
+        if (sensitive == nullptr || sensitive->ElementSize() > sizeof(zeroElement))
+            continue;
+
+        /* Fill the complete property capacity, not only its current count: a prior
+           shorter download/reset may have left older serialized bytes in the NVM
+           tail. Keeping the all-zero capacity serialized overwrites that tail. */
+        for (uint16_t index = 1; index <= sensitive->MaxElements(); ++index)
+            sensitive->write(index, 1, zeroElement);
     }
+
+    loadState(LS_UNLOADED);
+    setSecurityMode(false);
+    property(PID_TOOL_KEY)->write(1, 1, _fdsk);
 }
 
 const uint8_t* SecurityInterfaceObject::toolKey()

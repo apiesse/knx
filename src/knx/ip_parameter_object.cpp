@@ -130,4 +130,60 @@ IpParameterObject::IpParameterObject(DeviceObject& deviceObject, Platform& platf
     initializeProperties(sizeof(properties), properties);
 }
 
+static void resetArray(Property* property)
+{
+    if (property == nullptr)
+        return;
+
+    // DataProperty's start-index-zero write is the canonical array reset: it
+    // clears both storage and currentElements. Writing zero into every slot
+    // instead leaves the array at MaxElements and makes 0.0.0/custom tunnel
+    // records look configured after a factory reset.
+    const uint8_t noElements[2] = {0, 0};
+    property->write(0, 1, noElements);
+}
+
+static void resetScalar(Property* property, uint32_t value)
+{
+    if (property == nullptr)
+        return;
+
+    switch (property->ElementSize())
+    {
+        case 1:
+            property->write((uint8_t)value);
+            break;
+        case 2:
+            property->write((uint16_t)value);
+            break;
+        case 4:
+            property->write(value);
+            break;
+        default:
+            break;
+    }
+}
+
+void IpParameterObject::masterReset(EraseCode eraseCode, uint8_t channel)
+{
+    (void)channel;
+    if (eraseCode != EraseCode::FactoryReset &&
+        eraseCode != EraseCode::FactoryResetWithoutIA)
+        return;
+
+    resetScalar(property(PID_PROJECT_INSTALLATION_ID), 0);
+    resetScalar(property(PID_IP_ASSIGNMENT_METHOD), 0);
+    resetScalar(property(PID_IP_ADDRESS), 0);
+    resetScalar(property(PID_SUBNET_MASK), 0);
+    resetScalar(property(PID_DEFAULT_GATEWAY), 0);
+    resetScalar(property(PID_ROUTING_MULTICAST_ADDRESS), DEFAULT_MULTICAST_ADDR);
+    resetScalar(property(PID_TTL), 16);
+    resetArray(property(PID_FRIENDLY_NAME));
+#ifdef KNX_TUNNELING
+    resetArray(property(PID_ADDITIONAL_INDIVIDUAL_ADDRESSES));
+    resetArray(property(PID_CUSTOM_RESERVED_TUNNELS_CTRL));
+    resetArray(property(PID_CUSTOM_RESERVED_TUNNELS_IP));
+#endif
+}
+
 #endif

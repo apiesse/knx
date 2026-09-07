@@ -183,6 +183,11 @@ const uint8_t* RouterObject::restore(const uint8_t* buffer)
     return TableObject::restore(buffer);
 }
 
+bool RouterObject::hasValidFilterTable()
+{
+    return data() != nullptr && dataSize() == kFilterTableSize;
+}
+
 void RouterObject::commandClearSetRoutingTable(bool bitIsSet)
 {
     uint8_t fillbyte = bitIsSet ? 0xFF : 0x00;
@@ -370,7 +375,49 @@ void RouterObject::functionRouteTableControl(bool isCommand, uint8_t* data, uint
     printHex("", data, length);
 #endif
 
+    if (data == nullptr || length < 2)
+    {
+        resultData[0] = ReturnCodes::DataVoid;
+        resultData[1] = 0;
+        resultLength = 2;
+        return;
+    }
     RouteTableServices srvId = (RouteTableServices) data[1];
+    if ((srvId == ClearGroupAddress || srvId == SetGroupAddress) && length < 6)
+    {
+        resultData[0] = ReturnCodes::DataVoid;
+        resultData[1] = srvId;
+        resultLength = 2;
+        return;
+    }
+
+    const bool knownService = srvId == ClearRoutingTable || srvId == SetRoutingTable ||
+                              srvId == ClearGroupAddress || srvId == SetGroupAddress;
+    if (knownService && !hasValidFilterTable())
+    {
+        /* LS_LOADING alone does not prove that the dynamic table was allocated
+           with the KNX type-3 filter-table size. Refuse the operation rather
+           than reading through null or overwriting neighbouring NVM blocks. */
+        resultData[0] = ReturnCodes::AddressVoid;
+        resultData[1] = srvId;
+        resultLength = 2;
+        return;
+    }
+
+    uint16_t startAddress = 0;
+    uint16_t endAddress = 0;
+    if (srvId == ClearGroupAddress || srvId == SetGroupAddress)
+    {
+        popWord(startAddress, &data[2]);
+        popWord(endAddress, &data[4]);
+        if (startAddress > endAddress)
+        {
+            resultData[0] = ReturnCodes::DataVoid;
+            resultData[1] = srvId;
+            resultLength = 2;
+            return;
+        }
+    }
 
     if (isCommand)
     {
@@ -398,10 +445,6 @@ void RouterObject::functionRouteTableControl(bool isCommand, uint8_t* data, uint
                 return;
             case ClearGroupAddress:
             {
-                uint16_t startAddress;
-                uint16_t endAddress;
-                popWord(startAddress, &data[2]);
-                popWord(endAddress, &data[4]);
                 commandClearSetGroupAddress(startAddress, endAddress, false);
                 resultData[0] = ReturnCodes::Success;
                 resultData[1] = srvId;
@@ -412,10 +455,6 @@ void RouterObject::functionRouteTableControl(bool isCommand, uint8_t* data, uint
             }
             case SetGroupAddress:
             {
-                uint16_t startAddress;
-                uint16_t endAddress;
-                popWord(startAddress, &data[2]);
-                popWord(endAddress, &data[4]);
                 commandClearSetGroupAddress(startAddress, endAddress, true);
                 resultData[0] = ReturnCodes::Success;
                 resultData[1] = srvId;
@@ -442,10 +481,6 @@ void RouterObject::functionRouteTableControl(bool isCommand, uint8_t* data, uint
                 return;
             case ClearGroupAddress:
             {
-                uint16_t startAddress;
-                uint16_t endAddress;
-                popWord(startAddress, &data[2]);
-                popWord(endAddress, &data[4]);
                 resultData[0] = statusClearSetGroupAddress(startAddress, endAddress, false) ? ReturnCodes::Success : ReturnCodes::GenericError;
                 resultData[1] = srvId;
                 pushWord(startAddress, &resultData[2]);
@@ -455,10 +490,6 @@ void RouterObject::functionRouteTableControl(bool isCommand, uint8_t* data, uint
             }
             case SetGroupAddress:
             {
-                uint16_t startAddress;
-                uint16_t endAddress;
-                popWord(startAddress, &data[2]);
-                popWord(endAddress, &data[4]);
                 resultData[0] = statusClearSetGroupAddress(startAddress, endAddress, true) ? ReturnCodes::Success : ReturnCodes::GenericError;
                 resultData[1] = srvId;
                 pushWord(startAddress, &resultData[2]);
@@ -479,6 +510,12 @@ void RouterObject::functionRfEnableSbc(bool isCommand, uint8_t* data, uint8_t le
 {
     if (isCommand)
     {
+        if (data == nullptr || length < 1)
+        {
+            resultData[0] = ReturnCodes::DataVoid;
+            resultLength = 1;
+            return;
+        }
         _rfSbcRoutingEnabled = (data[0] == 1) ? true : false;
     }
 
@@ -507,6 +544,12 @@ void RouterObject::functionIpEnableSbc(bool isCommand, uint8_t* data, uint8_t le
 
     if (isCommand)
     {
+        if (data == nullptr || length < 1)
+        {
+            resultData[0] = ReturnCodes::DataVoid;
+            resultLength = 1;
+            return;
+        }
         _ipSbcRoutingEnabled = (data[0] == 1) ? true : false;
     }
 
@@ -534,22 +577,6 @@ void RouterObject::beforeStateChange(LoadState& newState)
         return;
 }
 
-void RouterObject::masterReset(EraseCode eraseCode, uint8_t channel)
-{
-#ifdef KNX_LOG_COUPLER
-    print("RouterObject::masterReset ");
-    print(eraseCode);
-    print(" ");
-    println(channel);
-#endif
-
-    if (eraseCode == FactoryReset)
-    {
-        // TODO: handle different erase codes
-        println("Factory reset of router object with filter table requested.");
-    }
-}
-
 bool RouterObject::isGroupAddressInFilterTable(uint16_t groupAddress)
 {
     if (loadState() != LS_LOADED)
@@ -570,11 +597,11 @@ bool RouterObject::isGroupAddressInFilterTable(uint16_t groupAddress)
         uint8_t bitPosition = groupAddress % 8;
         
 
-        if(filterTable)
+        if(filterTable && dataSize() == kFilterTableSize)
             return (filterTable[octetAddress] & (1 << bitPosition)) == (1 << bitPosition);
         else
         {
-            println("RouterObject::isGroupAddressInFilterTable filterTable is NULL");
+            println("RouterObject::isGroupAddressInFilterTable filter table is invalid");
             return false;
         }
     }

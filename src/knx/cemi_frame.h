@@ -21,6 +21,10 @@
 // 255 is the reserved escape and valid() drops it anyway; 254 is also PID_MAX_APDU_LENGTH.
 #define MAX_APDU_OCTET_COUNT 254
 
+// Maximum cEMI byte sequence this implementation can own/copy.  Keep this in
+// sync with buffer[] below; management frames share the same transport bound.
+#define MAX_CEMI_FRAME_SIZE (0xff + APDU_LPDU_DIFF)
+
 class CemiFrame
 {
     friend class DataLinkLayer;
@@ -77,6 +81,10 @@ class CemiFrame
 
     uint8_t calcCrcTP(uint8_t* buffer, uint16_t len);
     bool valid() const;
+    // Validate all length-derived offsets without constructing a CemiFrame.
+    // This is intended for untrusted tunnel input, before any protocol view is
+    // allowed to retain pointers into the caller-owned buffer.
+    static bool validBuffer(const uint8_t* data, uint16_t length);
     // True when the ctor could not carry the requested apduLength. The caller may then have written
     // past buffer[] into the members behind it, so nothing in this frame may be dereferenced.
     bool oversized() const { return _oversized; }
@@ -93,6 +101,7 @@ class CemiFrame
     APDU _apdu;
     uint16_t _length = 0; // only set if created from byte array
     bool _oversized = false; // apduLength > MAX_APDU_OCTET_COUNT was requested -> valid() is false, frame carries nothing
+    bool _layoutValid = false; // the NPDU/TPDU/APDU views point at a complete L_Data layout
 
 #ifdef USE_RF
     // FIXME: integrate this propery in _data

@@ -12,7 +12,7 @@ class NPDU
   public:
     uint8_t octetCount() const;
     void octetCount(uint8_t value);
-    uint8_t length() const;
+    uint16_t length() const;
     uint8_t hopCount() const;
     void hopCount(uint8_t value);
     CemiFrame& frame();

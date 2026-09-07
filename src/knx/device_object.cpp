@@ -112,6 +112,19 @@ uint16_t DeviceObject::saveSize()
     return 2 + InterfaceObject::saveSize();
 }
 
+void DeviceObject::masterReset(EraseCode eraseCode, uint8_t channel)
+{
+    (void)channel;
+    if (eraseCode == EraseCode::ResetIA || eraseCode == EraseCode::FactoryReset)
+    {
+#if MASK_VERSION == 0x091A || MASK_VERSION == 0x2920
+        _ownAddress = 0xFF00;
+#else
+        _ownAddress = 0xFFFF;
+#endif
+    }
+}
+
 uint16_t DeviceObject::individualAddress()
 {
     return _ownAddress;

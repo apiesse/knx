@@ -1,5 +1,6 @@
 #include "bau_systemB.h"
 #include "bits.h"
+#include "management_policy.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -56,49 +57,23 @@ uint8_t BauSystemB::checkmasterResetValidity(EraseCode eraseCode, uint8_t channe
     static constexpr uint8_t successCode = 0x00; // Where does this come from? It is the code for "success".
     static constexpr uint8_t invalidEraseCode = 0x02; // Where does this come from? It is the error code for "unspported erase code".
 
+    /* This implementation has one application channel only. Accepting a non-zero
+       channel while resetting channel zero would acknowledge a different operation
+       from the one actually performed. */
+    if (channel != 0)
+        return invalidEraseCode;
+
     switch (eraseCode)
     {
+        // All standard erase codes below are implemented by doMasterReset().
         case EraseCode::ConfirmedRestart:
-        {
-            println("Confirmed restart requested.");
-            return successCode;
-        }
         case EraseCode::ResetAP:
-        {
-            // TODO: increase download counter except for confirmed restart (PID_DOWNLOAD_COUNTER)
-            println("ResetAP requested. Not implemented yet.");
-            return successCode;
-        }
         case EraseCode::ResetIA:
-        {
-            // TODO: increase download counter except for confirmed restart (PID_DOWNLOAD_COUNTER)
-            println("ResetIA requested. Not implemented yet.");
-            return successCode;
-        }
         case EraseCode::ResetLinks:
-        {
-            // TODO: increase download counter except for confirmed restart (PID_DOWNLOAD_COUNTER)
-            println("ResetLinks requested. Not implemented yet.");
-            return successCode;
-        }
         case EraseCode::ResetParam:
-        {
-            // TODO: increase download counter except for confirmed restart (PID_DOWNLOAD_COUNTER)
-            println("ResetParam requested. Not implemented yet.");
-            return successCode;
-        }
         case EraseCode::FactoryReset:
-        {
-            // TODO: increase download counter except for confirmed restart (PID_DOWNLOAD_COUNTER)
-            println("Factory reset requested. type: with IA");
-            return successCode;
-        }
         case EraseCode::FactoryResetWithoutIA:
-        {
-            // TODO: increase download counter except for confirmed restart (PID_DOWNLOAD_COUNTER)
-            println("Factory reset requested. type: without IA");
             return successCode;
-        }
         default:
         {
             print("Unhandled erase code: ");
@@ -106,6 +81,66 @@ uint8_t BauSystemB::checkmasterResetValidity(EraseCode eraseCode, uint8_t channe
             return invalidEraseCode;
         }
     }
+}
+
+uint8_t BauSystemB::managementAccessLevel()
+{
+#ifdef KNX_MANAGEMENT_ALLOW_UNGATED
+    return 0;
+#else
+    return KnxManagementPolicy::accessLevel(_deviceObj.progMode());
+#endif
+}
+
+bool BauSystemB::managementMemoryAccessAllowed()
+{
+#ifdef KNX_MANAGEMENT_ALLOW_UNGATED
+    return true;
+#else
+    return KnxManagementPolicy::memoryAccessAllowed(_deviceObj.progMode());
+#endif
+}
+
+bool BauSystemB::managementWriteAllowed()
+{
+#ifdef KNX_MANAGEMENT_ALLOW_UNGATED
+    return true;
+#else
+    return KnxManagementPolicy::writeAllowed(ReadLv3 | WriteLv3, _deviceObj.progMode());
+#endif
+}
+
+bool BauSystemB::propertyReadAllowed(const Property* property)
+{
+    if (property == nullptr)
+        return false;
+#ifdef KNX_MANAGEMENT_ALLOW_UNGATED
+    return true;
+#else
+    return KnxManagementPolicy::readAllowed(property->Access(), _deviceObj.progMode());
+#endif
+}
+
+bool BauSystemB::propertyWriteAllowed(const Property* property)
+{
+    if (property == nullptr || !property->WriteEnable() || !managementWriteAllowed())
+        return false;
+#ifdef KNX_MANAGEMENT_ALLOW_UNGATED
+    return true;
+#else
+    return KnxManagementPolicy::writeAllowed(property->Access(), _deviceObj.progMode());
+#endif
+}
+
+bool BauSystemB::propertyCommandAllowed(const Property* property)
+{
+    if (property == nullptr || !managementWriteAllowed())
+        return false;
+#ifdef KNX_MANAGEMENT_ALLOW_UNGATED
+    return true;
+#else
+    return KnxManagementPolicy::writeAllowed(property->Access(), _deviceObj.progMode());
+#endif
 }
 
 void BauSystemB::deviceDescriptorReadIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint8_t descriptorType)
@@ -120,6 +155,11 @@ void BauSystemB::deviceDescriptorReadIndication(Priority priority, HopCountType 
 void BauSystemB::memoryRouterWriteIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint8_t number,
                                              uint16_t memoryAddress, uint8_t *data)
 {
+    if (!managementMemoryAccessAllowed())
+        return;
+    uint8_t* destination = _memory.toAbsoluteChecked(memoryAddress, number);
+    if (number == 0 || data == nullptr || destination == nullptr)
+        return;
     print("Writing memory at: ");
     print(memoryAddress, HEX);
     print(" length: ");
@@ -130,22 +170,31 @@ void BauSystemB::memoryRouterWriteIndication(Priority priority, HopCountType hop
     if (_deviceObj.verifyMode())
     {
         print("Sending Read indication");
-        memoryRouterReadIndication(priority, hopType, asap, secCtrl, number, memoryAddress, data);
+        memoryRouterReadIndication(priority, hopType, asap, secCtrl, number, memoryAddress, destination);
     }
 }
 
 void BauSystemB::memoryRouterReadIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint8_t number,
                                             uint16_t memoryAddress, uint8_t *data)
 {
+    if (!managementMemoryAccessAllowed())
+        number = 0;
     applicationLayer().memoryRouterReadResponse(AckRequested, priority, hopType, asap, secCtrl, number, memoryAddress, data);
 }
 
 void BauSystemB::memoryRoutingTableReadIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint8_t number, uint16_t memoryAddress, uint8_t *data)
 {
+    if (!managementMemoryAccessAllowed())
+        number = 0;
     applicationLayer().memoryRoutingTableReadResponse(AckRequested, priority, hopType, asap, secCtrl, number, memoryAddress, data);
 }
 void BauSystemB::memoryRoutingTableReadIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint8_t number, uint16_t memoryAddress)
 {
+    if (!managementMemoryAccessAllowed())
+    {
+        memoryRoutingTableReadIndication(priority, hopType, asap, secCtrl, 0, memoryAddress, nullptr);
+        return;
+    }
     uint8_t* p = _memory.toAbsoluteChecked(memoryAddress, number);
     if (p == nullptr) number = 0; // OOB read guard: keep the response within NVM
     memoryRoutingTableReadIndication(priority, hopType, asap, secCtrl, number, memoryAddress, p);
@@ -153,6 +202,11 @@ void BauSystemB::memoryRoutingTableReadIndication(Priority priority, HopCountTyp
 
 void BauSystemB::memoryRoutingTableWriteIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint8_t number, uint16_t memoryAddress, uint8_t *data)
 {
+    if (!managementMemoryAccessAllowed())
+        return;
+    uint8_t* destination = _memory.toAbsoluteChecked(memoryAddress, number);
+    if (number == 0 || data == nullptr || destination == nullptr)
+        return;
     print("Writing memory at: ");
     print(memoryAddress, HEX);
     print(" length: ");
@@ -161,26 +215,38 @@ void BauSystemB::memoryRoutingTableWriteIndication(Priority priority, HopCountTy
     printHex("=>", data, number);
     _memory.writeMemory(memoryAddress, number, data);
     if (_deviceObj.verifyMode())
-        memoryRoutingTableReadIndication(priority, hopType, asap, secCtrl, number, memoryAddress, data);
+        memoryRoutingTableReadIndication(priority, hopType, asap, secCtrl, number, memoryAddress, destination);
 }
 
 void BauSystemB::memoryWriteIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint8_t number,
     uint16_t memoryAddress, uint8_t * data)
 {
+    if (!managementMemoryAccessAllowed())
+        return;
+    uint8_t* destination = _memory.toAbsoluteChecked(memoryAddress, number);
+    if (number == 0 || data == nullptr || destination == nullptr)
+        return;
     _memory.writeMemory(memoryAddress, number, data);
     if (_deviceObj.verifyMode())
-        memoryReadIndication(priority, hopType, asap, secCtrl, number, memoryAddress, data);
+        memoryReadIndication(priority, hopType, asap, secCtrl, number, memoryAddress, destination);
 }
 
 void BauSystemB::memoryReadIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint8_t number,
     uint16_t memoryAddress, uint8_t * data)
 {
+    if (!managementMemoryAccessAllowed())
+        number = 0;
     applicationLayer().memoryReadResponse(AckRequested, priority, hopType, asap, secCtrl, number, memoryAddress, data);
 }
 
 void BauSystemB::memoryReadIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint8_t number,
     uint16_t memoryAddress)
 {
+    if (!managementMemoryAccessAllowed())
+    {
+        applicationLayer().memoryReadResponse(AckRequested, priority, hopType, asap, secCtrl, 0, memoryAddress, nullptr);
+        return;
+    }
     uint8_t* p = _memory.toAbsoluteChecked(memoryAddress, number);
     if (p == nullptr) number = 0; // OOB read guard: keep the response within NVM
     applicationLayer().memoryReadResponse(AckRequested, priority, hopType, asap, secCtrl, number, memoryAddress, p);
@@ -188,13 +254,33 @@ void BauSystemB::memoryReadIndication(Priority priority, HopCountType hopType, u
 
 void BauSystemB::memoryExtWriteIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint8_t number, uint32_t memoryAddress, uint8_t * data)
 {
+    if (!managementMemoryAccessAllowed())
+    {
+        applicationLayer().memoryExtWriteResponse(AckRequested, priority, hopType, asap, secCtrl,
+                                                  ReturnCodes::AccessDenied, 0, memoryAddress, nullptr);
+        return;
+    }
+    uint8_t* destination = _memory.toAbsoluteChecked(memoryAddress, number);
+    if (number == 0 || data == nullptr || destination == nullptr)
+    {
+        applicationLayer().memoryExtWriteResponse(AckRequested, priority, hopType, asap, secCtrl,
+                                                  ReturnCodes::AddressVoid, 0, memoryAddress, nullptr);
+        return;
+    }
     _memory.writeMemory(memoryAddress, number, data);
 
-    applicationLayer().memoryExtWriteResponse(AckRequested, priority, hopType, asap, secCtrl, ReturnCodes::Success, number, memoryAddress, _memory.toAbsolute(memoryAddress));
+    applicationLayer().memoryExtWriteResponse(AckRequested, priority, hopType, asap, secCtrl,
+                                              ReturnCodes::Success, number, memoryAddress, destination);
 }
 
 void BauSystemB::memoryExtReadIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint8_t number, uint32_t memoryAddress)
 {
+    if (!managementMemoryAccessAllowed())
+    {
+        applicationLayer().memoryExtReadResponse(AckRequested, priority, hopType, asap, secCtrl,
+                                                 ReturnCodes::AccessDenied, 0, memoryAddress, nullptr);
+        return;
+    }
     uint8_t* p = _memory.toAbsoluteChecked(memoryAddress, number);
     ReturnCodes code = (p != nullptr) ? ReturnCodes::Success : ReturnCodes::AddressVoid; // OOB read -> AddressVoid, no data
     if (p == nullptr) number = 0;
@@ -207,7 +293,7 @@ void BauSystemB::doMasterReset(EraseCode eraseCode, uint8_t channel)
     _appProgram.masterReset(eraseCode, channel);
 }
 
-void BauSystemB::factoryReset()
+void BauSystemB::localFactoryReset()
 {
     /* Reset application data but keep the individual address, then persist so the
        change survives the reboot the caller triggers. */
@@ -217,6 +303,15 @@ void BauSystemB::factoryReset()
 
 void BauSystemB::restartRequestIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, RestartType restartType, EraseCode eraseCode, uint8_t channel)
 {
+    /* A_Restart is a remote management mutation. The trusted local reset API above
+       does not pass through this gate. */
+    if (!managementWriteAllowed())
+    {
+        if (restartType == RestartType::MasterReset)
+            applicationLayer().restartResponse(AckRequested, priority, hopType, secCtrl, 0x02, 0);
+        return;
+    }
+
     if (restartType == RestartType::BasicRestart)
     {
         println("Basic restart requested");
@@ -229,6 +324,8 @@ void BauSystemB::restartRequestIndication(Priority priority, HopCountType hopTyp
         // We send the restart response now before actually applying the reset values
         // Processing time is kRestartProcessTime (example 3 seconds) that we require for the applying the master reset with restart
         applicationLayer().restartResponse(AckRequested, priority, hopType, secCtrl, errorCode, (errorCode == 0) ? kRestartProcessTime : 0);
+        if (errorCode != 0)
+            return;
         doMasterReset(eraseCode, channel);
     }
     else
@@ -245,11 +342,21 @@ void BauSystemB::restartRequestIndication(Priority priority, HopCountType hopTyp
 
 void BauSystemB::authorizeIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint32_t key)
 {
-    applicationLayer().authorizeResponse(AckRequested, priority, hopType, asap, secCtrl, 0);
+    (void)key;
+    /* No classic management-key store exists in this stack. Never interpret an
+       arbitrary key as level 0. Physical programming mode is the only trusted
+       authorization mechanism by default; 0xFF means no access. */
+    const uint8_t level = managementWriteAllowed() ? 0 : 0xFF;
+    applicationLayer().authorizeResponse(AckRequested, priority, hopType, asap, secCtrl, level);
 }
 
 void BauSystemB::userMemoryReadIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint8_t number, uint32_t memoryAddress)
 {
+    if (!managementMemoryAccessAllowed())
+    {
+        applicationLayer().userMemoryReadResponse(AckRequested, priority, hopType, asap, secCtrl, 0, memoryAddress, nullptr);
+        return;
+    }
     uint8_t* p = _memory.toAbsoluteChecked(memoryAddress, number);
     if (p == nullptr) number = 0; // OOB read guard: keep the response within NVM
     applicationLayer().userMemoryReadResponse(AckRequested, priority, hopType, asap, secCtrl, number, memoryAddress, p);
@@ -257,6 +364,8 @@ void BauSystemB::userMemoryReadIndication(Priority priority, HopCountType hopTyp
 
 void BauSystemB::userMemoryWriteIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint8_t number, uint32_t memoryAddress, uint8_t* data)
 {
+    if (!managementMemoryAccessAllowed())
+        return;
     _memory.writeMemory(memoryAddress, number, data);
 
     if (_deviceObj.verifyMode())
@@ -302,7 +411,7 @@ void BauSystemB::propertyExtDescriptionReadIndication(Priority priority, HopCoun
     if (obj)
         obj->readPropertyDescription(pid, pidx, writeEnable, type, numberOfElements, access);
 
-    applicationLayer().propertyExtDescriptionReadResponse(AckRequested, priority, hopType, asap, secCtrl, objectType, objectInstance, propertyId, propertyIndex,
+    applicationLayer().propertyExtDescriptionReadResponse(AckRequested, priority, hopType, asap, secCtrl, objectType, objectInstance, pid, pidx,
         descriptionType, writeEnable, type, numberOfElements, access);
 }
 
@@ -315,13 +424,23 @@ void BauSystemB::propertyValueWriteIndication(Priority priority, HopCountType ho
         // Memory-safety guard (see propertyValueExtWriteIndication): numberOfElements is attacker-controlled and
         // DataProperty::write() memcpy()s numberOfElements*ElementSize() from `data`; never read past the payload.
         Property* prop = obj->property((PropertyID)propertyId);
+        const uint32_t requiredLength = startIndex == 0
+                                            ? 2U
+                                            : (prop != nullptr
+                                                   ? (uint32_t)numberOfElements * prop->ElementSize()
+                                                   : UINT32_MAX);
         // PID_LOAD_STATE_CONTROL (PDT_CONTROL, ElementSize reports 1) reaches additionalLoadControls, which reads
         // 8 octets for LE_ADDITIONAL_LOAD_CONTROLS; ElementSize does not bound that -> drop a short/corrupt one.
-        bool loadCtrlShort = (propertyId == PID_LOAD_STATE_CONTROL && length >= 1
+        bool loadCtrlShort = (propertyId == PID_LOAD_STATE_CONTROL && data != nullptr && length >= 1
                               && data[0] == LE_ADDITIONAL_LOAD_CONTROLS && length < 8);
-        if (!loadCtrlShort && (prop == nullptr || (uint32_t)numberOfElements * prop->ElementSize() <= length))
+        if (!loadCtrlShort && data != nullptr && propertyWriteAllowed(prop)
+            && requiredLength <= length)
             obj->writeProperty((PropertyID)propertyId, startIndex, data, numberOfElements);
+        else
+            numberOfElements = 0;
     }
+    else
+        numberOfElements = 0;
     propertyValueReadIndication(priority, hopType, asap, secCtrl, objectIndex, propertyId, numberOfElements, startIndex);
 }
 
@@ -338,14 +457,35 @@ void BauSystemB::propertyValueExtWriteIndication(Priority priority, HopCountType
         // `length`-octet payload (and persisting the stolen bytes into the property). Reject a write that
         // claims more element data than the payload carries.
         Property* prop = obj->property((PropertyID)propertyId);
+        const uint32_t requiredLength = startIndex == 0
+                                            ? 2U
+                                            : (prop != nullptr
+                                                   ? (uint32_t)numberOfElements * prop->ElementSize()
+                                                   : UINT32_MAX);
         // see propertyValueWriteIndication: the LE_ADDITIONAL_LOAD_CONTROLS callback reads 8 octets (PDT_CONTROL
         // ElementSize reports 1 and does not bound it) -> reject a short/corrupt load-control write.
-        bool loadCtrlShort = (propertyId == PID_LOAD_STATE_CONTROL && length >= 1
+        bool loadCtrlShort = (propertyId == PID_LOAD_STATE_CONTROL && data != nullptr && length >= 1
                               && data[0] == LE_ADDITIONAL_LOAD_CONTROLS && length < 8);
-        if (loadCtrlShort || (prop != nullptr && (uint32_t)numberOfElements * prop->ElementSize() > length))
+        if (prop == nullptr)
+            returnCode = ReturnCodes::AddressVoid;
+        else if (!propertyWriteAllowed(prop))
+            returnCode = prop->WriteEnable() ? ReturnCodes::AccessDenied : ReturnCodes::AccessReadOnly;
+        else if (data == nullptr || loadCtrlShort || requiredLength > length)
             returnCode = ReturnCodes::DataOverflow;
         else
-            obj->writeProperty((PropertyID)propertyId, startIndex, data, numberOfElements);
+        {
+            uint8_t writtenElements = numberOfElements;
+            obj->writeProperty((PropertyID)propertyId, startIndex, data, writtenElements);
+            if (writtenElements == 0)
+            {
+                // The property callback rejected the value itself (as opposed to
+                // the payload exceeding the addressed storage checked above).
+                returnCode = ReturnCodes::DataVoid;
+                numberOfElements = 0;
+            }
+            else
+                numberOfElements = writtenElements;
+        }
     }
     else
         returnCode = ReturnCodes::AddressVoid;
@@ -373,7 +513,8 @@ void BauSystemB::propertyValueReadIndication(Priority priority, HopCountType hop
 #endif
 
     InterfaceObject* obj = getInterfaceObject(objectIndex);
-    if (obj)
+    Property* prop = obj != nullptr ? obj->property((PropertyID)propertyId) : nullptr;
+    if (obj && elementCount > 0 && propertyReadAllowed(prop))
     {
         uint8_t elementSize = obj->propertySize((PropertyID)propertyId);
         if (startIndex > 0)
@@ -395,7 +536,7 @@ void BauSystemB::propertyValueReadIndication(Priority priority, HopCountType hop
         elementCount = 0;
 
     uint8_t data[size];
-    if(obj)
+    if(obj && elementCount > 0 && propertyReadAllowed(prop))
         obj->readProperty((PropertyID)propertyId, startIndex, elementCount, data);
 
     if (elementCount == 0)
@@ -411,7 +552,8 @@ void BauSystemB::propertyValueExtReadIndication(Priority priority, HopCountType 
     uint8_t size = 0;
     uint8_t elementCount = numberOfElements;
     InterfaceObject* obj = getInterfaceObject(objectType, objectInstance);
-    if (obj)
+    Property* prop = obj != nullptr ? obj->property((PropertyID)propertyId) : nullptr;
+    if (obj && propertyReadAllowed(prop))
     {
         uint8_t elementSize = obj->propertySize((PropertyID)propertyId);
         if (startIndex > 0)
@@ -434,7 +576,7 @@ void BauSystemB::propertyValueExtReadIndication(Priority priority, HopCountType 
         elementCount = 0;
 
     uint8_t data[size];
-    if(obj)
+    if(obj && propertyReadAllowed(prop))
         obj->readProperty((PropertyID)propertyId, startIndex, elementCount, data);
 
     if (elementCount == 0)
@@ -450,20 +592,30 @@ void BauSystemB::functionPropertyCommandIndication(Priority priority, HopCountTy
     uint8_t resultData[kFunctionPropertyResultBufferMaxSize];
     uint8_t resultLength = kFunctionPropertyResultMax; // tell the callee what the response can carry
 
+    if (!managementWriteAllowed())
+    {
+        resultData[0] = ReturnCodes::AccessDenied;
+        applicationLayer().functionPropertyStateResponse(AckRequested, priority, hopType, asap, secCtrl,
+                                                         objectIndex, propertyId, resultData, 1);
+        return;
+    }
+
     bool handled = false;
 
     InterfaceObject* obj = getInterfaceObject(objectIndex);
     if(obj)
     {
         Property* prop = obj->property((PropertyID)propertyId);
-        if (prop != nullptr && prop->Type() == PDT_FUNCTION) // property() returns nullptr for an unknown PID -> null-deref
+        if (propertyCommandAllowed(prop) && prop->Type() == PDT_FUNCTION)
         {
             obj->command((PropertyID)propertyId, data, length, resultData, resultLength);
             handled = true;
         }
         else
         {
-            if(_functionProperty != 0)
+            /* A registered fallback may only represent an unknown PID. Never
+               let it override an existing property's declared access/type. */
+            if(prop == nullptr && _functionProperty != 0)
                 if(_functionProperty(objectIndex, propertyId, length, data, resultData, resultLength))
                     handled = true;
 
@@ -500,14 +652,17 @@ void BauSystemB::functionPropertyStateIndication(Priority priority, HopCountType
     if(obj)
     {
         Property* prop = obj->property((PropertyID)propertyId);
-        if (prop != nullptr && prop->Type() == PDT_FUNCTION) // property() returns nullptr for an unknown PID -> null-deref
+        if (propertyReadAllowed(prop) && prop->Type() == PDT_FUNCTION)
         {
             obj->state((PropertyID)propertyId, data, length, resultData, resultLength);
             handled = true;
         }
         else
         {
-            if(_functionPropertyState != 0)
+            /* Unknown virtual properties have no access metadata. Fail closed
+               outside the physical programming-mode management window, and do
+               not let a callback bypass an existing property's policy. */
+            if(prop == nullptr && managementWriteAllowed() && _functionPropertyState != 0)
                 if(_functionPropertyState(objectIndex, propertyId, length, data, resultData, resultLength))
                     handled = true;
 
@@ -520,7 +675,7 @@ void BauSystemB::functionPropertyStateIndication(Priority priority, HopCountType
             }
         }
     } else {
-        if(_functionPropertyState != 0)
+        if(managementWriteAllowed() && _functionPropertyState != 0)
             if(_functionPropertyState(objectIndex, propertyId, length, data, resultData, resultLength))
                 handled = true;
     }
@@ -537,13 +692,30 @@ void BauSystemB::functionPropertyExtCommandIndication(Priority priority, HopCoun
     uint8_t resultData[kFunctionPropertyResultBufferMaxSize];
     uint8_t resultLength = 1; // we always have to include the return code at least
 
+    if (!managementWriteAllowed())
+    {
+        resultData[0] = ReturnCodes::AccessDenied;
+        applicationLayer().functionPropertyExtStateResponse(AckRequested, priority, hopType, asap, secCtrl,
+                                                            objectType, objectInstance, propertyId,
+                                                            resultData, resultLength);
+        return;
+    }
+
     InterfaceObject* obj = getInterfaceObject(objectType, objectInstance);
     if(obj)
     {
         Property* prop = obj->property((PropertyID)propertyId);
         PropertyDataType propType = prop != nullptr ? prop->Type() : (PropertyDataType)0; // null (unknown PID) -> non-FUNCTION sentinel, never deref null
 
-        if (propType == PDT_FUNCTION)
+        if (prop == nullptr)
+        {
+            resultData[0] = ReturnCodes::AddressVoid;
+        }
+        else if (propType == PDT_FUNCTION && !propertyCommandAllowed(prop))
+        {
+            resultData[0] = ReturnCodes::AccessDenied;
+        }
+        else if (propType == PDT_FUNCTION)
         {
             // The first byte is reserved and 0 for PDT_FUNCTION
             uint8_t reservedByte = data[0];
@@ -557,6 +729,10 @@ void BauSystemB::functionPropertyExtCommandIndication(Priority priority, HopCoun
                 obj->command((PropertyID)propertyId, data, length, resultData, resultLength);
                 // resultLength was modified by the callee
             }
+        }
+        else if (propType == PDT_CONTROL && !propertyWriteAllowed(prop))
+        {
+            resultData[0] = prop->WriteEnable() ? ReturnCodes::AccessDenied : ReturnCodes::AccessReadOnly;
         }
         else if (propType == PDT_CONTROL)
         {
@@ -609,7 +785,11 @@ void BauSystemB::functionPropertyExtStateIndication(Priority priority, HopCountT
         Property* prop = obj->property((PropertyID)propertyId);
         PropertyDataType propType = prop != nullptr ? prop->Type() : (PropertyDataType)0; // null (unknown PID) -> non-FUNCTION sentinel, never deref null
 
-        if (propType == PDT_FUNCTION)
+        if (!propertyReadAllowed(prop))
+        {
+            resultData[0] = prop == nullptr ? ReturnCodes::AddressVoid : ReturnCodes::AccessDenied;
+        }
+        else if (propType == PDT_FUNCTION)
         {
             // The first byte is reserved and 0 for PDT_FUNCTION
             uint8_t reservedByte = data[0];
@@ -662,7 +842,8 @@ void BauSystemB::individualAddressSerialNumberWriteIndication(Priority priority,
 {
     // If the received serial number matches our serial number
     // then store the received new individual address in the device object
-    if (!memcmp(knxSerialNumber, _deviceObj.propertyData(PID_SERIAL_NUMBER), 6))
+    if (managementWriteAllowed()
+        && !memcmp(knxSerialNumber, _deviceObj.propertyData(PID_SERIAL_NUMBER), 6))
         _deviceObj.individualAddress(newIndividualAddress);
 }
 
@@ -784,7 +965,8 @@ void BauSystemB::propertyValueRead(ObjectType objectType, uint8_t objectInstance
 
     InterfaceObject* obj = getInterfaceObject(objectType, objectInstance);
 
-    if (obj)
+    Property* prop = obj != nullptr ? obj->property((PropertyID)propertyId) : nullptr;
+    if (obj && propertyReadAllowed(prop))
     {
         uint8_t elementSize = obj->propertySize((PropertyID)propertyId);
         if (startIndex > 0)
@@ -816,10 +998,16 @@ void BauSystemB::propertyValueWrite(ObjectType objectType, uint8_t objectInstanc
         // memcpy()s numberOfElements*ElementSize() from `data`. Reject a write claiming more element data than
         // the `length`-octet payload carries -> no over-read past the cEMI request buffer, no info-leak persisted.
         Property* prop = obj->property((PropertyID)propertyId);
+        const uint32_t requiredLength = startIndex == 0
+                                            ? 2U
+                                            : (prop != nullptr
+                                                   ? (uint32_t)numberOfElements * prop->ElementSize()
+                                                   : UINT32_MAX);
         // see propertyValueWriteIndication: bound the LE_ADDITIONAL_LOAD_CONTROLS 8-octet read against the payload
-        bool loadCtrlShort = (propertyId == PID_LOAD_STATE_CONTROL && length >= 1
+        bool loadCtrlShort = (propertyId == PID_LOAD_STATE_CONTROL && data != nullptr && length >= 1
                               && data[0] == LE_ADDITIONAL_LOAD_CONTROLS && length < 8);
-        if (loadCtrlShort || (prop != nullptr && (uint32_t)numberOfElements * prop->ElementSize() > length))
+        if (prop == nullptr || data == nullptr || !propertyWriteAllowed(prop) || loadCtrlShort
+            || requiredLength > length)
             numberOfElements = 0;
         else
             obj->writeProperty((PropertyID)propertyId, startIndex, data, numberOfElements);

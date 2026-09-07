@@ -209,6 +209,14 @@ void RfPhysicalLayerCC1310::loop()
 
             //println("TX_START...");
             _rfDataLinkLayer.loadNextTxFrame(&sendBuffer, &sendBufferLength);
+
+            if (sendBuffer == nullptr || sendBufferLength == 0)
+            {
+                delete[] sendBuffer;
+                _loopState = RX_START;
+                break;
+            }
+
             uint16_t pktLen = PACKET_SIZE(sendBuffer[0]);
 
             if (pktLen != sendBufferLength)
@@ -216,6 +224,9 @@ void RfPhysicalLayerCC1310::loop()
                 print("Error TX: SendBuffer[0]=");println(sendBuffer[0]);
                 print("Error TX: SendBufferLength=");println(sendBufferLength);
                 print("Error TX: PACKET_SIZE=");println(PACKET_SIZE(sendBuffer[0]));
+                delete[] sendBuffer;
+                _loopState = RX_START;
+                break;
             }
 
             // Calculate total number of bytes in the KNX RF packet from L-field
@@ -223,12 +234,16 @@ void RfPhysicalLayerCC1310::loop()
             if ((pktLen == 0) || (pktLen > 290)) 
             {
                 println("TX packet length error!");
+                delete[] sendBuffer;
+                _loopState = RX_START;
                 break;
             }
 
             if (pktLen > 255) 
             {
                 println("Unhandled: TX packet > 255");
+                delete[] sendBuffer;
+                _loopState = RX_START;
                 break;
             }
 
@@ -241,7 +256,7 @@ void RfPhysicalLayerCC1310::loop()
 #if defined(DEBUG_DUMP_PACKETS)
             printHex("TX: ", sendBuffer, pktLen);
 #endif
-            delete sendBuffer;
+            delete[] sendBuffer;
 
             if (result != RF_EventLastCmdDone) 
             {

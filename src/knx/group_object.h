@@ -217,6 +217,9 @@ class GroupObject
      * @returns true if the value of the group object has been sent, false if not or conversion failed.
      */
     bool valueCompareTime(const KNXValue& value, const Dpt& type, uint32_t& lastTime, const uint32_t time);
+    /** Variant that distinguishes a valid unchanged value from an encoding error. */
+    bool valueCompareTime(const KNXValue& value, const Dpt& type, uint32_t& lastTime,
+                          const uint32_t time, bool& conversionSuccessful);
 
     /**
      * set the current value of the group object and show success.
@@ -240,6 +243,9 @@ class GroupObject
      * @returns true if the value of the group object has changed, false if conversion results in same value as stored in group object or failed.
      */
     bool valueNoSendCompare(const KNXValue& value, const Dpt& type);
+    /** Variant that reports whether DPT encoding succeeded independently of change. */
+    bool valueNoSendCompare(const KNXValue& value, const Dpt& type,
+                            bool& conversionSuccessful);
 
     /**
      * set the current value of the group object.

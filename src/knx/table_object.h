@@ -31,6 +31,7 @@ class TableObject: public InterfaceObject
     uint8_t* save(uint8_t* buffer) override;
     const uint8_t* restore(const uint8_t* buffer) override;
     uint16_t saveSize() override;
+    void masterReset(EraseCode eraseCode, uint8_t channel) override;
 
     static void beforeTablesUnloadCallback(BeforeTablesUnloadCallback func);
     static BeforeTablesUnloadCallback beforeTablesUnloadCallback();
@@ -48,6 +49,10 @@ class TableObject: public InterfaceObject
      * must not be written at nor freed.
      */
     uint8_t* data();
+
+    /** Exact payload size currently backing data(). Derived fixed-format tables
+     * must validate it before indexing or writing their payload. */
+    uint32_t dataSize() const { return _size; }
     /**
      * Set the reason for a state change failure.
      */
@@ -79,6 +84,7 @@ class TableObject: public InterfaceObject
      * @param newState the new ::LoadState 
      */
     void loadState(LoadState newState);
+    void resetTable();
     LoadState _state = LS_UNLOADED;
     uint8_t *_data = 0;
     static uint8_t _tableUnloadCount;

@@ -2,6 +2,15 @@
 #include <cstring>
 
 #ifdef USE_IP
+namespace
+{
+uint8_t* copyRoutingCemiFrame(uint8_t* destination, CemiFrame& frame)
+{
+    memcpy(destination, frame.data(), frame.totalLenght());
+    return destination;
+}
+}
+
 CemiFrame& KnxIpRoutingIndication::frame()
 {
     return _frame;
@@ -14,9 +23,9 @@ KnxIpRoutingIndication::KnxIpRoutingIndication(uint8_t* data,
 }
 
 KnxIpRoutingIndication::KnxIpRoutingIndication(CemiFrame frame)
-    : KnxIpFrame(frame.totalLenght() + LEN_KNXIP_HEADER), _frame(_data + headerLength(), frame.totalLenght())
+    : KnxIpFrame(frame.totalLenght() + LEN_KNXIP_HEADER),
+      _frame(copyRoutingCemiFrame(_data + LEN_KNXIP_HEADER, frame), frame.totalLenght())
 {
     serviceTypeIdentifier(RoutingIndication);
-    memcpy(_data + LEN_KNXIP_HEADER, frame.data(), frame.totalLenght());
 }
 #endif

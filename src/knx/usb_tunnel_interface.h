@@ -84,8 +84,9 @@ class UsbTunnelInterface
     // USB RX queue
     static _queue_t _rx_queue;
     static void addBufferRxQueue(const uint8_t* data, uint16_t length);
+    static void clearRxQueue();
     bool isRxQueueEmpty();
-    void loadNextRxBuffer(uint8_t** receiveBuffer, uint16_t* receiveBufferLength);
+    bool loadNextRxBuffer(uint8_t** receiveBuffer, uint16_t* receiveBufferLength);
     static bool rxHaveCompletePacket;
 
     void handleTransferProtocolPacket(uint8_t* data, uint16_t length);

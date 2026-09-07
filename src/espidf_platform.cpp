@@ -148,7 +148,9 @@ void EspIdfPlatform::restart()
 
 void EspIdfPlatform::setupMultiCast(uint32_t addr, uint16_t port)
 {
-    _multicast_addr = addr;
+    // Platform addresses use host-order integers (as do HPAI/getInt and the
+    // Arduino backends); BSD socket fields require network byte order.
+    _multicast_addr = htonl(addr);
     _multicast_port = port;
 
     _sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
@@ -173,7 +175,7 @@ void EspIdfPlatform::setupMultiCast(uint32_t addr, uint16_t port)
 
     ip_mreq imreq = {};
     imreq.imr_interface.s_addr = IPADDR_ANY;
-    imreq.imr_multiaddr.s_addr = addr;
+    imreq.imr_multiaddr.s_addr = _multicast_addr;
     if (setsockopt(_sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, &imreq, sizeof(imreq)) < 0)
     {
         ESP_LOGE(KTAG, "Failed to join multicast group: errno %d", errno);
@@ -230,7 +232,7 @@ int EspIdfPlatform::readBytesMultiCast(uint8_t *buffer, uint16_t maxLen, uint32_
         return 0;
     }
 
-    src_addr = _remote_addr->sin_addr.s_addr;
+    src_addr = ntohl(_remote_addr->sin_addr.s_addr);
     src_port = ntohs(_remote_addr->sin_port);
     return len;
 }
@@ -244,7 +246,7 @@ bool EspIdfPlatform::sendBytesUniCast(uint32_t addr, uint16_t port, uint8_t *buf
 
     sockaddr_in dest_addr = {};
     dest_addr.sin_family = AF_INET;
-    dest_addr.sin_addr.s_addr = (addr == 0) ? _remote_addr->sin_addr.s_addr : addr;
+    dest_addr.sin_addr.s_addr = (addr == 0) ? _remote_addr->sin_addr.s_addr : htonl(addr);
     dest_addr.sin_port = (port == 0) ? _remote_addr->sin_port : htons(port);
 
     if (sendto(_sock, buffer, len, 0, (sockaddr *) &dest_addr, sizeof(dest_addr)) < 0)

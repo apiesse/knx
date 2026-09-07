@@ -55,6 +55,66 @@ void TableObject::loadState(LoadState newState)
     _state = newState;
 }
 
+void TableObject::masterReset(EraseCode eraseCode, uint8_t channel)
+{
+    (void)channel;
+    if (eraseCode == EraseCode::ConfirmedRestart || eraseCode == EraseCode::ResetIA)
+        return;
+
+    bool reset = eraseCode == EraseCode::FactoryReset || eraseCode == EraseCode::FactoryResetWithoutIA;
+    if (!reset)
+    {
+        uint16_t objectType = 0;
+        Property* objectTypeProperty = property(PID_OBJECT_TYPE);
+        if (objectTypeProperty != nullptr)
+            objectTypeProperty->read(objectType);
+
+        switch (eraseCode)
+        {
+            case EraseCode::ResetLinks:
+                reset = objectType == OT_ADDR_TABLE || objectType == OT_ASSOC_TABLE;
+                break;
+            case EraseCode::ResetAP:
+                reset = objectType == OT_APPLICATION_PROG || objectType == OT_GRP_OBJ_TABLE;
+                break;
+            case EraseCode::ResetParam:
+                reset = objectType == OT_APPLICATION_PROG;
+                break;
+            default:
+                break;
+        }
+    }
+
+    if (reset)
+        resetTable();
+}
+
+void TableObject::resetTable()
+{
+    loadState(LS_UNLOADED);
+    if (_data != nullptr && !_staticTableAdr)
+    {
+        /* A table lives in the platform's non-volatile address space. On targets
+           with XIP flash, _data is read-only and must never be written directly.
+           Clear through Memory so EEPROM emulation, flash erase buffering and
+           callback-backed storage all use their supported write path. */
+        const uint32_t start = _memory.toRelative(_data);
+        uint8_t zeros[32] = {};
+        uint32_t cleared = 0;
+        while (cleared < _size)
+        {
+            const size_t chunk = (_size - cleared) < sizeof(zeros)
+                                     ? (size_t)(_size - cleared)
+                                     : sizeof(zeros);
+            _memory.writeMemory(start + cleared, chunk, zeros);
+            cleared += (uint32_t)chunk;
+        }
+        _memory.freeMemory(_data);
+        _data = nullptr;
+        _size = 0;
+    }
+}
+
 
 uint8_t* TableObject::save(uint8_t* buffer)
 {

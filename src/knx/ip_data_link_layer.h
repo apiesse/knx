@@ -36,7 +36,8 @@ class IpDataLinkLayer : public DataLinkLayer
     bool sendFrame(CemiFrame& frame);
 
 #if KNX_SERVICE_FAMILY_CORE >= 2
-    void loopHandleSearchRequestExtended(uint8_t* buffer, uint16_t length);
+    void loopHandleSearchRequestExtended(uint8_t* buffer, uint16_t length,
+                                         uint32_t remoteAddr, uint16_t remotePort);
 #endif
     bool sendBytes(uint8_t* buffer, uint16_t length);
     bool isSendLimitReached();

@@ -126,7 +126,7 @@ InterfaceObject* Bau27B0::getInterfaceObject(ObjectType objectType, uint16_t obj
 void Bau27B0::doMasterReset(EraseCode eraseCode, uint8_t channel)
 {
     // Common SystemB objects
-    BauSystemB::doMasterReset(eraseCode, channel);
+    BauSystemBDevice::doMasterReset(eraseCode, channel);
 
     _rfMediumObj.masterReset(eraseCode, channel);
 }
@@ -155,7 +155,9 @@ void Bau27B0::domainAddressSerialNumberWriteIndication(Priority priority, HopCou
 {
     // If the received serial number matches our serial number
     // then store the received RF domain address in the RF medium object
-    if (!memcmp(knxSerialNumber, _deviceObj.propertyData(PID_SERIAL_NUMBER), 6))
+    const uint8_t* ownSerialNumber = _deviceObj.propertyData(PID_SERIAL_NUMBER);
+    if (managementWriteAllowed() && rfDoA != nullptr && knxSerialNumber != nullptr &&
+        ownSerialNumber != nullptr && !memcmp(knxSerialNumber, ownSerialNumber, 6))
         _rfMediumObj.rfDomainAddress(rfDoA);
 }
 

@@ -28,9 +28,11 @@ class BauSystemB : protected BusAccessUnit
     Memory& memory();
     void readMemory();
     void writeMemory();
-    /* Local factory reset: clears the KNX application (address/association/GO tables
-       + parameters) while preserving the individual address. */
-    void factoryReset();
+    /* Trusted local factory reset: clears the KNX application (address/association/GO
+       tables + parameters) while preserving the individual address. This entry point
+       is deliberately separate from A_Restart received from the bus. */
+    void localFactoryReset();
+    void factoryReset() { localFactoryReset(); } // compatibility alias for existing local integrations
     void addSaveRestore(SaveRestore* obj);
 
     bool restartRequest(uint16_t asap, const SecurityControl secCtrl);
@@ -114,6 +116,16 @@ class BauSystemB : protected BusAccessUnit
 
     void nextRestartState();
     virtual void doMasterReset(EraseCode eraseCode, uint8_t channel);
+
+    /* Classic KNX management in this stack has no persisted access-key table. Fail
+       closed by default and use the physical programming-mode window as the
+       authorization boundary. KNX_MANAGEMENT_ALLOW_UNGATED is a legacy-only opt-out. */
+    uint8_t managementAccessLevel();
+    bool managementMemoryAccessAllowed();
+    bool managementWriteAllowed();
+    bool propertyReadAllowed(const Property* property);
+    bool propertyWriteAllowed(const Property* property);
+    bool propertyCommandAllowed(const Property* property);
 
     enum RestartState
     {

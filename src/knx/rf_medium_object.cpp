@@ -57,4 +57,18 @@ void RfMediumObject::rfDomainAddress(const uint8_t* value)
     Property* prop = property(PID_RF_DOMAIN_ADDRESS);
     prop->write(value);
 }
+
+void RfMediumObject::masterReset(EraseCode eraseCode, uint8_t channel)
+{
+    (void)channel;
+    if (eraseCode != EraseCode::FactoryReset &&
+        eraseCode != EraseCode::FactoryResetWithoutIA)
+        return;
+
+    static const uint8_t defaultDomainAddress[] = {
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
+    };
+    property(PID_RF_MULTI_TYPE)->write((uint8_t)0x00);
+    property(PID_RF_DOMAIN_ADDRESS)->write(defaultDomainAddress);
+}
 #endif
