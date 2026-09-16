@@ -535,7 +535,7 @@ void BauSystemB::propertyValueReadIndication(Priority priority, HopCountType hop
     else
         elementCount = 0;
 
-    uint8_t data[size];
+    uint8_t data[255] = {}; // bounded response workspace, including rejected/zero-count reads
     if(obj && elementCount > 0 && propertyReadAllowed(prop))
         obj->readProperty((PropertyID)propertyId, startIndex, elementCount, data);
 
@@ -575,7 +575,7 @@ void BauSystemB::propertyValueExtReadIndication(Priority priority, HopCountType 
     else
         elementCount = 0;
 
-    uint8_t data[size];
+    uint8_t data[255] = {}; // bounded response workspace, including rejected/zero-count reads
     if(obj && propertyReadAllowed(prop))
         obj->readProperty((PropertyID)propertyId, startIndex, elementCount, data);
 

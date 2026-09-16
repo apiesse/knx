@@ -111,6 +111,15 @@ class GroupObject
      * reading a ::Updated to mark the changed group object as processed. This is optional.
      */
     void commFlag(ComFlag value);
+    uint32_t revision() const { return _revision; }
+    void advanceRevision() { if (++_revision == 0) ++_revision; }
+    bool cancelPendingWrite(uint32_t revision)
+    {
+        if (_revision != revision || commFlag() != WriteRequest) return false;
+        advanceRevision();
+        commFlag(Ok);
+        return true;
+    }
 
     /**
      * Check if the group object contains a valid value assigned from bus or from application program
@@ -312,6 +321,7 @@ class GroupObject
 #endif
 
   private:
+    uint32_t _revision = 0;
     // class members
     static GroupObjectTableObject* _table;
 #ifdef SMALL_GROUPOBJECT

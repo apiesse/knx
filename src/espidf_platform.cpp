@@ -1,3 +1,4 @@
+#if defined(ESP_PLATFORM) && !defined(ARDUINO)
 #include "espidf_platform.h"
 
 #include "TPUart/Interface/EspIdf.h"
@@ -345,3 +346,5 @@ void EspIdfPlatform::commitToEeprom()
         ESP_LOGE(KTAG, "EEPROM commit failed: %s", esp_err_to_name(err));
     }
 }
+
+#endif // native ESP-IDF only

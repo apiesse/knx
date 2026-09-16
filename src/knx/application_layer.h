@@ -7,6 +7,7 @@
 class AssociationTableObject;
 class BusAccessUnit;
 class TransportLayer;
+enum class TelegramOrigin { Bus, LocalLoopback };
 /**
  * This is an implementation of the application layer as specified in @cite knx:3/5/1.
  * It provides methods for the BusAccessUnit to do different things and translates this 
@@ -23,6 +24,8 @@ class ApplicationLayer
      * @param bau methods are called here depending of the content of the APDU
      */
     ApplicationLayer(BusAccessUnit& bau);
+    TelegramOrigin telegramOrigin() const { return _telegramOrigin; }
+    uint16_t localOriginAsap() const { return _localOriginAsap; }
     /**
      * Assigns the TransportLayer to which encoded APDU are submitted to.
      */
@@ -167,7 +170,8 @@ class ApplicationLayer
 
   protected:
 #pragma region hooks
-    void dataGroupIndication(HopCountType hopType, Priority priority, uint16_t tsap, APDU& apdu, const SecurityControl &secCtrl);
+    void dataGroupIndication(HopCountType hopType, Priority priority, uint16_t tsap, APDU& apdu, const SecurityControl &secCtrl,
+                             TelegramOrigin origin = TelegramOrigin::Bus, uint16_t localAsap = 0);
     void dataGroupConfirm(AckType ack, HopCountType hopType, Priority priority, uint16_t tsap,
                           APDU& apdu, const SecurityControl& secCtrl, bool status);
     void dataBroadcastIndication(HopCountType hopType, Priority priority, uint16_t source, APDU& apdu, const SecurityControl& secCtrl);
@@ -195,6 +199,8 @@ class ApplicationLayer
     static const SecurityControl noSecurity;
 
   private:
+    TelegramOrigin _telegramOrigin = TelegramOrigin::Bus;
+    uint16_t _localOriginAsap = 0;
     void propertyDataSend(ApduType type, AckType ack, Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl,
                           uint8_t objectIndex, uint8_t propertyId, uint8_t numberOfElements, uint16_t startIndex, uint8_t* data,
                           uint8_t length);

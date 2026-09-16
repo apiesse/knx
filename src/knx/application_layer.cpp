@@ -31,8 +31,19 @@ void ApplicationLayer::dataGroupIndication(HopCountType hopType, Priority priori
     dataGroupIndication(hopType, priority, tsap, apdu, noSecurity);
 }
 
-void ApplicationLayer::dataGroupIndication(HopCountType hopType, Priority priority, uint16_t tsap, APDU& apdu, const SecurityControl& secCtrl)
+void ApplicationLayer::dataGroupIndication(HopCountType hopType, Priority priority, uint16_t tsap, APDU& apdu, const SecurityControl& secCtrl,
+                                         TelegramOrigin origin, uint16_t localAsap)
 {
+    // Nested loopbacks (e.g. a read response) restore their caller's origin.
+    struct OriginScope {
+        TelegramOrigin &slot;
+        TelegramOrigin previous;
+        uint16_t &asapSlot;
+        uint16_t previousAsap;
+        ~OriginScope() { slot = previous; asapSlot = previousAsap; }
+    } scope{_telegramOrigin, _telegramOrigin, _localOriginAsap, _localOriginAsap};
+    _telegramOrigin = origin;
+    _localOriginAsap = localAsap;
     if (_assocTable == nullptr)
         return;
 
@@ -86,20 +97,29 @@ void ApplicationLayer::dataGroupConfirm(AckType ack, HopCountType hopType, Prior
     switch (apdu.type())
     {
     case GroupValueRead:
-        if (_savedAsapReadRequest > 0)
-            _bau.groupValueReadLocalConfirm(ack, _savedAsapReadRequest, priority, hopType, secCtrl, status);
+    {
+        const uint16_t asap = _savedAsapReadRequest;
         _savedAsapReadRequest = 0;
+        if (asap > 0)
+            _bau.groupValueReadLocalConfirm(ack, asap, priority, hopType, secCtrl, status);
         break;
+    }
     case GroupValueResponse:
-        if (_savedAsapResponse > 0)
-            _bau.groupValueReadResponseConfirm(ack, _savedAsapResponse, priority, hopType, secCtrl, apdu.data(), apdu.length() - 1, status);
+    {
+        const uint16_t asap = _savedAsapResponse;
         _savedAsapResponse = 0;
+        if (asap > 0)
+            _bau.groupValueReadResponseConfirm(ack, asap, priority, hopType, secCtrl, apdu.data(), apdu.length() - 1, status);
         break;
+    }
     case GroupValueWrite:
-        if (_savedAsapWriteRequest > 0)
-            _bau.groupValueWriteLocalConfirm(ack, _savedAsapWriteRequest, priority, hopType, secCtrl, apdu.data(), apdu.length() - 1, status);
+    {
+        const uint16_t asap = _savedAsapWriteRequest;
         _savedAsapWriteRequest = 0;
+        if (asap > 0)
+            _bau.groupValueWriteLocalConfirm(ack, asap, priority, hopType, secCtrl, apdu.data(), apdu.length() - 1, status);
         break;
+    }
     default:
         print("datagroup-confirm: unhandled APDU-Type: ");
         println(apdu.type());
@@ -394,7 +414,10 @@ void ApplicationLayer::dataConnectedConfirm(uint16_t tsap, const SecurityControl
 void ApplicationLayer::groupValueReadRequest(AckType ack, uint16_t asap, Priority priority, HopCountType hopType, const SecurityControl& secCtrl)
 {
     if (_assocTable == nullptr)
+    {
+        _bau.groupValueReadLocalConfirm(ack, asap, priority, hopType, secCtrl, false);
         return;
+    }
 
     CemiFrame frame(1);
     APDU& apdu = frame.apdu();
@@ -402,7 +425,10 @@ void ApplicationLayer::groupValueReadRequest(AckType ack, uint16_t asap, Priorit
 
     int32_t value = _assocTable->translateAsap(asap);
     if (value < 0)
+    {
+        _bau.groupValueReadLocalConfirm(ack, asap, priority, hopType, secCtrl, false);
         return; // there is no tsap in association table for this asap
+    }
 
     uint16_t tsap = (uint16_t)value;
     // Claimed only once the telegram is actually going out. Set before the check, an unassigned ASAP
@@ -411,7 +437,7 @@ void ApplicationLayer::groupValueReadRequest(AckType ack, uint16_t asap, Priorit
 
     // first to bus then to itself
     dataGroupRequest(ack, hopType, priority, tsap, apdu, secCtrl);
-    dataGroupIndication(hopType, priority, tsap, apdu, secCtrl);
+    dataGroupIndication(hopType, priority, tsap, apdu, secCtrl, TelegramOrigin::LocalLoopback, asap);
 }
 
 void ApplicationLayer::groupValueReadResponse(AckType ack, uint16_t asap, Priority priority, HopCountType hopType, const SecurityControl& secCtrl, uint8_t * data, uint8_t dataLength)
@@ -1078,8 +1104,23 @@ void ApplicationLayer::propertyExtDataSend(ApduType type, AckType ack, Priority 
 void ApplicationLayer::groupValueSend(ApduType type, AckType ack, uint16_t asap, Priority priority, HopCountType hopType, const SecurityControl &secCtrl,
     uint8_t* data,  uint8_t& dataLength)
 {
+    auto reject = [&]() {
+        if (type == GroupValueWrite)
+        {
+            _savedAsapWriteRequest = 0;
+            _bau.groupValueWriteLocalConfirm(ack, asap, priority, hopType, secCtrl, data, dataLength, false);
+        }
+        else
+        {
+            _savedAsapResponse = 0;
+            _bau.groupValueReadResponseConfirm(ack, asap, priority, hopType, secCtrl, data, dataLength, false);
+        }
+    };
     if (_assocTable == nullptr || data == nullptr || dataLength > MAX_APDU_OCTET_COUNT - 1)
+    {
+        reject();
         return;
+    }
 
     CemiFrame frame(dataLength + 1);
     APDU& apdu = frame.apdu();
@@ -1106,12 +1147,13 @@ void ApplicationLayer::groupValueSend(ApduType type, AckType ack, uint16_t asap,
             _savedAsapWriteRequest = 0;
         if (type == GroupValueResponse && _savedAsapResponse == asap)
             _savedAsapResponse = 0;
+        reject();
         return; // no tsap in the association table for this asap
     }
 
     uint16_t tsap = (uint16_t)value;
     dataGroupRequest(ack, hopType, priority, tsap, apdu, secCtrl);
-    dataGroupIndication(hopType, priority, tsap, apdu, secCtrl);
+    dataGroupIndication(hopType, priority, tsap, apdu, secCtrl, TelegramOrigin::LocalLoopback, asap);
 }
 
 void ApplicationLayer::memorySend(ApduType type, AckType ack, Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl& secCtrl, uint8_t number,

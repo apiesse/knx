@@ -54,10 +54,10 @@ void BauSystemBDevice::loop()
 
 void BauSystemBDevice::sendNextGroupTelegram()
 {
-    if(!configured())
+    if(!configured() || _pendingAsap != 0)
         return;
     
-    static uint16_t startIdx = 1;
+    uint16_t& startIdx = _nextGroupAsap;
 
     GroupObjectTableObject& table = _groupObjTable;
     uint16_t objCount = table.entryCount();
@@ -80,9 +80,14 @@ void BauSystemBDevice::sendNextGroupTelegram()
                 handler(go);
 #endif
         }
-        if (!go.communicationEnable())
+        // The application layer retains one ASAP for each service globally.
+        // Reserve before invoking any path that can synchronously reject TX.
+        _pendingAsap = asap;
+        _pendingRevision = go.revision();
+        _pendingKind = flag;
+        if (!go.communicationEnable() || (flag == WriteRequest && !go.transmitEnable()))
         {
-            go.commFlag(Ok);
+            completeGroupRequest(asap, flag, false);
             continue;
         }
 
@@ -96,7 +101,8 @@ void BauSystemBDevice::sendNextGroupTelegram()
         goSecurity.dataSecurity = DataSecurity::None;
 #endif
 
-        if (flag == WriteRequest && go.transmitEnable())
+        go.commFlag(Transmitting);
+        if (flag == WriteRequest)
         {
             uint8_t* data = go.valueRef();
             _appLayer.groupValueWriteRequest(AckRequested, asap, go.priority(), NetworkLayerParameter, goSecurity, data,
@@ -106,8 +112,6 @@ void BauSystemBDevice::sendNextGroupTelegram()
         {
             _appLayer.groupValueReadRequest(AckRequested, asap, go.priority(), NetworkLayerParameter, goSecurity);
         }
-
-        go.commFlag(Transmitting);
 
         startIdx = asap + 1;
         return;
@@ -119,15 +123,16 @@ void BauSystemBDevice::sendNextGroupTelegram()
 void BauSystemBDevice::updateGroupObject(GroupObject & go, uint8_t * data, uint8_t length)
 {
     uint8_t* goData = go.valueRef();
-    if (length != go.valueSize())
-    {
-        go.commFlag(Error);
-        return;
-    }
+    if (length != go.valueSize() || data == nullptr) return;
+
+    const bool fromBus = _appLayer.telegramOrigin() == TelegramOrigin::Bus;
+    if (!fromBus && go.asap() == _appLayer.localOriginAsap()) return;
+    if (!fromBus && (go.commFlag() == WriteRequest || go.commFlag() == Transmitting)) return;
+    if (fromBus) go.advanceRevision();
 
     memcpy(goData, data, length);
 
-    if (go.commFlag() != WriteRequest)
+    if (fromBus || go.commFlag() != WriteRequest)
     {
         go.commFlag(Updated);
 #ifdef SMALL_GROUPOBJECT
@@ -142,6 +147,7 @@ void BauSystemBDevice::updateGroupObject(GroupObject & go, uint8_t * data, uint8
     {
         go.commFlag(Updated);
     }
+    if (fromBus && _receivedHandler) _receivedHandler(go, _receivedContext);
 }
 
 bool BauSystemBDevice::configured()
@@ -177,20 +183,27 @@ void BauSystemBDevice::doMasterReset(EraseCode eraseCode, uint8_t channel)
 
 void BauSystemBDevice::groupValueWriteLocalConfirm(AckType ack, uint16_t asap, Priority priority, HopCountType hopType, const SecurityControl &secCtrl, uint8_t * data, uint8_t dataLength, bool status)
 {
-    GroupObject& go = _groupObjTable.get(asap);
-    if (status)
-        go.commFlag(Ok);
-    else
-        go.commFlag(Error);
+    completeGroupRequest(asap, WriteRequest, status);
 }
 
 void BauSystemBDevice::groupValueReadLocalConfirm(AckType ack, uint16_t asap, Priority priority, HopCountType hopType, const SecurityControl &secCtrl, bool status)
 {
-    GroupObject& go = _groupObjTable.get(asap);
-    if (status)
-        go.commFlag(Ok);
-    else
-        go.commFlag(Error);
+    completeGroupRequest(asap, ReadRequest, status);
+}
+
+void BauSystemBDevice::completeGroupRequest(uint16_t asap, ComFlag kind, bool success)
+{
+    if (_pendingAsap != asap || _pendingKind != kind || asap == 0) return;
+    const uint32_t revision = _pendingRevision;
+    _pendingAsap = 0;
+    _pendingKind = Ok;
+    if (asap <= _groupObjTable.entryCount())
+    {
+        GroupObject& go = _groupObjTable.get(asap);
+        if (go.revision() == revision) go.commFlag(success ? Ok : Error);
+    }
+    if (kind == WriteRequest && _transmittedHandler)
+        _transmittedHandler(asap, revision, success, _transmittedContext);
 }
 
 void BauSystemBDevice::groupValueReadIndication(uint16_t asap, Priority priority, HopCountType hopType, const SecurityControl &secCtrl)

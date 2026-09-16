@@ -5,7 +5,7 @@
 
 #if defined(__linux__)
 #include <arpa/inet.h>
-#elif defined(ESP_PLATFORM)
+#elif defined(ESP_PLATFORM) && !defined(ARDUINO)
 #include <lwip/inet.h>
 #elif defined(ARDUINO_ARCH_SAMD) || defined(ARDUINO_ARCH_STM32) || defined (DeviceFamily_CC13X0)
 #define getbyte(x,n) (*(((uint8_t*)&(x))+n))
@@ -32,7 +32,7 @@
 #elif defined(ARDUINO_ARCH_ESP8266)
 #include <Arduino.h>
 #include <user_interface.h>
-#elif defined(ESP_PLATFORM)
+#elif defined(ESP_PLATFORM) && !defined(ARDUINO)
 #include "openknx_espidf_compat.h"
 #elif defined(ARDUINO_ARCH_ESP32)
 #include <Arduino.h>
