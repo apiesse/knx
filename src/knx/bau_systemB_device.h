@@ -23,6 +23,12 @@ class BauSystemBDevice : public BauSystemB
     void loop() override;
     bool configured() override;
     GroupObjectTableObject& groupObjectTable();
+    using ReceiveHandler = void (*)(GroupObject&, void*);
+    using TransmitHandler = void (*)(uint16_t, uint32_t, bool, void*);
+    void receivedGroupObjectCallback(ReceiveHandler callback, void *context = nullptr)
+    { _receivedHandler = callback; _receivedContext = context; }
+    void transmittedGroupObjectCallback(TransmitHandler callback, void *context = nullptr)
+    { _transmittedHandler = callback; _transmittedContext = context; }
 
   protected:
     ApplicationLayer& applicationLayer() override;
@@ -54,4 +60,13 @@ class BauSystemBDevice : public BauSystemB
     NetworkLayerDevice _netLayer;
 
     bool _configured = true;
+    uint16_t _pendingAsap = 0;
+    uint32_t _pendingRevision = 0;
+    ComFlag _pendingKind = Ok;
+    uint16_t _nextGroupAsap = 1;
+    ReceiveHandler _receivedHandler = nullptr;
+    TransmitHandler _transmittedHandler = nullptr;
+    void *_receivedContext = nullptr;
+    void *_transmittedContext = nullptr;
+    void completeGroupRequest(uint16_t asap, ComFlag kind, bool success);
 };

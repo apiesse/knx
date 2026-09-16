@@ -115,6 +115,14 @@ void TpUartDataLinkLayer::initialize()
     if (!_initialized && _platform.interface() != nullptr)
     {
         _tpuart.registerReceivedFrame(std::bind(&TpUartDataLinkLayer::processRxFrame, this, std::placeholders::_1));
+        _tpuart.registerTransmitResult([this](TPUart::Frame &frame, bool success) {
+            uint8_t data[MAX_CEMI_FRAME_SIZE];
+            if (frame.fillCemiData(reinterpret_cast<char *>(data), sizeof(data)))
+            {
+                CemiFrame cemi(data, frame.cemiSize());
+                dataConReceived(cemi, success);
+            }
+        });
         _tpuart.registerMessage(std::bind(&TpUartDataLinkLayer::printMessage, this, std::placeholders::_1, std::placeholders::_2));
         _tpuart.registerCheckAcknowledge(std::bind(&TpUartDataLinkLayer::checkAcknowledge, this, std::placeholders::_1, std::placeholders::_2));
 #ifdef NCN5120
@@ -220,6 +228,9 @@ TPUart::AcknowledgeType TpUartDataLinkLayer::checkAcknowledge(unsigned short des
 
 void TpUartDataLinkLayer::processRxFrame(TPUart::Frame &tpFrame)
 {
+    // Echo is still available to legacy TPUART observers, but has no RX or TX
+    // semantics here: the dedicated completion callback is authoritative.
+    if (tpFrame.isTransmitted()) return;
     if (isMonitoring())
     {
         printMessage(tpFrame.printFrame().c_str(), false);
@@ -237,12 +248,6 @@ void TpUartDataLinkLayer::processRxFrame(TPUart::Frame &tpFrame)
         return;
     }
     CemiFrame cemiFrame(cemiData, tpFrame.cemiSize());
-
-    if (tpFrame.isTransmitted()) {
-        dataConReceived(cemiFrame, tpFrame.isAck());
-        TPUart::Frame::freeCemiData((char*)cemiData);
-        return;
-    }
 
     // printHex("  TP<: ", (const uint8_t *)tpFrame.data(), tpFrame.size());
     // printHex("  CEMI<: ", cemiFrame.data(), cemiFrame.dataLength());

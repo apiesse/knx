@@ -414,6 +414,15 @@ void TableObject::initializeDynTableProperties(size_t propertiesSize, Property**
             }),
         new CallbackProperty<TableObject>(this, PID_MCB_TABLE, false, PDT_GENERIC_08, 1, ReadLv3 | WriteLv0,
             [](TableObject* obj, uint16_t start, uint8_t count, uint8_t* data) -> uint8_t {
+                if (data == nullptr || count != 1 || start > 1)
+                    return 0;
+                // Index zero is always the two-byte element count, never an MCB.
+                // It must also be readable before the table has been loaded.
+                if (start == 0)
+                {
+                    pushWord(1, data);
+                    return 1;
+                }
                 if (obj->_state != LS_LOADED)
                     return 0; // need to check return code for invalid
                 

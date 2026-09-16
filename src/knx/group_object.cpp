@@ -152,6 +152,7 @@ ComFlag GroupObject::commFlag()
 
 void GroupObject::commFlag(ComFlag value)
 {
+    if (value == WriteRequest || value == ReadRequest) advanceRevision();
     _commFlagEx.commFlag = value;
     if (value == WriteRequest || value == Updated || value == Ok)
         _commFlagEx.uninitialized = false;

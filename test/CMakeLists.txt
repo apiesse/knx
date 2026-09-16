@@ -4,6 +4,24 @@ project(openknx_management_policy_tests LANGUAGES CXX)
 
 enable_testing()
 
+file(GLOB behavioral_sources ../src/knx/*.cpp)
+list(FILTER behavioral_sources EXCLUDE REGEX "/(bau07B0|tpuart_data_link_layer)\\.cpp$")
+add_library(behavioral_core STATIC ${behavioral_sources})
+target_compile_features(behavioral_core PUBLIC cxx_std_14)
+target_compile_definitions(behavioral_core PUBLIC MASK_VERSION=0x07B0 NO_KNX_CONFIG KNX_NO_PRINT KNX_FLASH_SIZE=4096)
+set(TPUART_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../OpenKNX-tpuart" CACHE PATH "TPUART source checkout")
+target_include_directories(behavioral_core PUBLIC ../src "${TPUART_SOURCE_DIR}/src")
+add_executable(behavioral_test behavioral_test.cpp)
+target_link_libraries(behavioral_test PRIVATE behavioral_core)
+option(ENABLE_SANITIZERS "Run behavioral tests with ASan and UBSan" OFF)
+if(ENABLE_SANITIZERS)
+    foreach(target behavioral_core behavioral_test)
+        target_compile_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(${target} PRIVATE -fsanitize=address,undefined)
+    endforeach()
+endif()
+add_test(NAME behavioral_test COMMAND behavioral_test)
+
 # These are object targets on purpose: OpenKNX does not currently provide a
 # linkable native-host platform implementation.  They still compile the real
 # headers and hardened implementation units, including all static assertions.

@@ -9,7 +9,18 @@ Memory::Memory(Platform& platform, DeviceObject& deviceObject)
 {}
 
 Memory::~Memory()
-{}
+{
+    while (_freeList) {
+        MemoryBlock* next = _freeList->next;
+        delete _freeList;
+        _freeList = next;
+    }
+    while (_usedList) {
+        MemoryBlock* next = _usedList->next;
+        delete _usedList;
+        _usedList = next;
+    }
+}
 
 void Memory::readMemory()
 {
@@ -454,9 +465,10 @@ void Memory::addToFreeList(MemoryBlock* block)
     // now check block and block->next
     if ((block->address + block->size) == block->next->address)
     {
-        block->size += block->next->size;
-        block->next = block->next->next;
-        delete block->next;
+        MemoryBlock* merged = block->next;
+        block->size += merged->size;
+        block->next = merged->next;
+        delete merged;
     }
 }
 
