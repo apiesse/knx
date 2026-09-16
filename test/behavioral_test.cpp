@@ -67,6 +67,8 @@ public:
     bool enabled() override { return true; }
     void enabled(bool) override {}
     using BauSystemBDevice::sendNextGroupTelegram;
+    using BauSystemB::propertyValueReadIndication;
+    using BauSystemB::propertyValueExtReadIndication;
     InterfaceObject *getInterfaceObject(uint8_t) override { return &_addrTable; }
     InterfaceObject *getInterfaceObject(ObjectType, uint16_t) override { return &_addrTable; }
     TableObject &table() { return _addrTable; }
@@ -129,6 +131,15 @@ int main() {
     uint8_t mcb[8] = {};
     count = 1; table.readProperty(PID_MCB_TABLE, 1, count, mcb); assert(count == 0);
     d.loadGroups();
+    // Exercise the actual standard and extended management response workspaces,
+    // including their two-byte index-zero allocation and rejected element counts.
+    for (uint16_t start : {0,1,2,4095}) for (uint8_t requested : {0,1,2,15,255}) {
+        d.propertyValueReadIndication(LowPriority, NetworkLayerParameter, 0x1101,
+            SecurityControl{}, 1, PID_MCB_TABLE, requested, start);
+        d.propertyValueExtReadIndication(LowPriority, NetworkLayerParameter, 0x1101,
+            SecurityControl{}, OT_ADDR_TABLE, 1, PID_MCB_TABLE, requested, start);
+    }
+    d.link.sent.clear();
     for (uint16_t start : {0,1,2,65535}) for (uint8_t requested : {0,1,2,255}) {
         count = requested;
         table.readProperty(PID_MCB_TABLE, start, count, mcb);
