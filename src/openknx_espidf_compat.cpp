@@ -1,3 +1,4 @@
+#if defined(ESP_PLATFORM) && !defined(ARDUINO)
 #include "openknx_espidf_compat.h"
 
 #include "driver/gpio.h"
@@ -233,3 +234,5 @@ void println(void)
 {
     std::printf("\n");
 }
+
+#endif // native ESP-IDF only

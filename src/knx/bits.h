@@ -32,7 +32,7 @@
 #elif defined(ARDUINO_ARCH_ESP8266)
 #include <Arduino.h>
 #include <user_interface.h>
-#elif defined(ESP_PLATFORM)
+#elif defined(ESP_PLATFORM) && !defined(ARDUINO)
 #include "openknx_espidf_compat.h"
 #elif defined(ARDUINO_ARCH_ESP32)
 #include <Arduino.h>
