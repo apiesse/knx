@@ -10,7 +10,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: apiesse/tpuart
-          ref: 3fd1b0aa2586bbc0860d848185e77e8485c37a5e
+          ref: 80e4e122256598aca49d863a73132732e94bd377
           path: .test-deps/tpuart
       - run: cmake -S test -B build/host -DENABLE_SANITIZERS=ON -DCMAKE_CXX_COMPILER=clang++ -DTPUART_SOURCE_DIR="$PWD/.test-deps/tpuart"
       - run: cmake --build build/host -j2

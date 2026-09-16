@@ -19,6 +19,6 @@
         "url": "https://github.com/OpenKNX/knx"
     },
     "dependencies": {
-        "TPUart": "https://github.com/apiesse/tpuart#3fd1b0aa2586bbc0860d848185e77e8485c37a5e"
+        "TPUart": "https://github.com/apiesse/tpuart#80e4e122256598aca49d863a73132732e94bd377"
     }
 }
