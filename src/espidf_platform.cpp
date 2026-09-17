@@ -311,6 +311,25 @@ uint8_t *EspIdfPlatform::getEepromBuffer(uint32_t size)
 
     size_t required_size = size;
     err = nvs_get_blob(_nvs_handle, _nvs_key, _eeprom_buffer, &required_size);
+    if (err == ESP_ERR_NVS_INVALID_LENGTH || (err == ESP_OK && required_size != size))
+    {
+        // NVS updates blobs atomically, so a stored blob that is larger than
+        // the current KNX EEPROM layout can prevent the first replacement from
+        // fitting. This key is owned exclusively by the KNX platform; discard
+        // only that incompatible image and let commissioning create a new one.
+        ESP_LOGW(KTAG, "Discarding incompatible KNX EEPROM blob (%u bytes, expected %" PRIu32 ")",
+                 (unsigned) required_size, size);
+        err = nvs_erase_key(_nvs_handle, _nvs_key);
+        if (err == ESP_OK)
+        {
+            err = nvs_commit(_nvs_handle);
+        }
+        if (err != ESP_OK)
+        {
+            ESP_LOGE(KTAG, "Failed to erase incompatible KNX EEPROM blob: %s", esp_err_to_name(err));
+        }
+    }
+
     if (err != ESP_OK || required_size != size)
     {
         ESP_LOGI(KTAG, "Initializing fresh EEPROM buffer (%" PRIu32 " bytes)", size);
