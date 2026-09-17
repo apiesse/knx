@@ -253,8 +253,11 @@ void TableObject::loadEventLoading(const uint8_t* data)
         case LE_START_LOADING:
             break;
         case LE_LOAD_COMPLETED:
-            _memory.saveMemory();
+            /* Persist the committed state, not the transient LS_LOADING
+               state. Saving first made a successful direct download appear
+               unconfigured after the next reset. */
             loadState(LS_LOADED);
+            _memory.saveMemory();
             break;
         case LE_UNLOAD:
             loadState(LS_UNLOADED);

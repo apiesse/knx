@@ -211,7 +211,10 @@ void Memory::writeMemory()
 
 void Memory::saveMemory()
 {
-    _platform.commitNonVolatileMemory();
+    /* Persist table metadata and backing data, not merely a pending platform
+       buffer. TableObject invokes this at LE_LOAD_COMPLETED; committing alone
+       discarded a direct ETS-style download on the next restart. */
+    writeMemory();
 }
 
 void Memory::addSaveRestore(SaveRestore* obj)
