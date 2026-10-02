@@ -8,6 +8,9 @@ responses, transport revisions and the Read/Transmit GO flags, including
 diagnostics that must remain unknown until their first local update. It also
 round-trips DPT 20 one-byte enumerations through the real codec and GroupObject
 telegram path, including HVAC profiles/machine modes and malformed inputs.
+The ETS association-table description request is replayed through the real
+application layer, including capacities above the 12-bit response limit in
+both standard and extended descriptions.
 
 The directory also uses two complementary checks:
 

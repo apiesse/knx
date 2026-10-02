@@ -71,7 +71,10 @@ public:
     using BauSystemBDevice::groupValueReadIndication;
     using BauSystemB::propertyValueReadIndication;
     using BauSystemB::propertyValueExtReadIndication;
-    InterfaceObject *getInterfaceObject(uint8_t) override { return &_addrTable; }
+    ApplicationLayer &app() { return _appLayer; }
+    InterfaceObject *getInterfaceObject(uint8_t index) override {
+        return index == 2 ? static_cast<InterfaceObject*>(&_assocTable) : &_addrTable;
+    }
     InterfaceObject *getInterfaceObject(ObjectType, uint16_t) override { return &_addrTable; }
     TableObject &table() { return _addrTable; }
     void load(TableObject &table, std::initializer_list<uint16_t> words) {
@@ -102,6 +105,42 @@ public:
         _appLayer.dataGroupIndication(NetworkLayerParameter, LowPriority, tsap, frame.apdu());
     }
 };
+
+static void associationDescriptionTest() {
+    FakePlatform platform;
+    Device device(platform);
+    // Replay the APDU on which ETS full download timed out: object 2, PID_TABLE.
+    // The real association property advertises 65535 elements internally.
+    CemiFrame request(4);
+    request.apdu().type(PropertyDescriptionRead);
+    request.apdu().data()[1] = 2;
+    request.apdu().data()[2] = PID_TABLE;
+    request.apdu().data()[3] = 0;
+    device.app().dataIndividualIndication(NetworkLayerParameter, LowPriority,
+        0x11ff, request.apdu());
+    assert(device.link.sent.size() == 1);
+    auto &response = device.link.sent.back().apdu();
+    assert(response.type() == PropertyDescriptionResponse);
+    assert(response.length() == 8);
+    assert(response.data()[1] == 2 && response.data()[2] == PID_TABLE);
+    assert(getWord(response.data() + 5) == 0x0fff);
+
+    // Both response formats must answer large capacities without wrapping them
+    // to zero, and must keep the four reserved count bits clear.
+    for (uint16_t capacity : {0, 1, 4095, 4096, 65535}) {
+        device.link.sent.clear();
+        device.app().propertyDescriptionReadResponse(AckRequested, LowPriority,
+            NetworkLayerParameter, 0x11ff, SecurityControl{}, 2, PID_TABLE,
+            1, false, PDT_GENERIC_04, capacity, ReadLv3 | WriteLv0);
+        device.app().propertyExtDescriptionReadResponse(AckRequested, LowPriority,
+            NetworkLayerParameter, 0x11ff, SecurityControl{}, OT_ASSOC_TABLE,
+            1, PID_TABLE, 1, 0, false, PDT_GENERIC_04, capacity, ReadLv3 | WriteLv0);
+        assert(device.link.sent.size() == 2);
+        const uint16_t expected = capacity > 0x0fff ? 0x0fff : capacity;
+        assert(getWord(device.link.sent[0].apdu().data() + 5) == expected);
+        assert(getWord(device.link.sent[1].apdu().data() + 13) == expected);
+    }
+}
 
 static void memoryTest() {
     FakePlatform p;
@@ -211,6 +250,7 @@ static void enumerationCodecTest() {
 }
 
 int main() {
+    associationDescriptionTest();
     memoryTest();
     diagnosticFlagsTest();
     enumerationCodecTest();

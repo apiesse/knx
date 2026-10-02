@@ -810,8 +810,11 @@ void ApplicationLayer::propertyDescriptionReadResponse(AckType ack, Priority pri
     uint8_t objectIndex, uint8_t propertyId, uint8_t propertyIndex, bool writeEnable, uint8_t type, 
     uint16_t maxNumberOfElements, uint8_t access)
 {
+    // Property capacities are uint16_t internally (PID_TABLE uses 65535),
+    // while this response has a 12-bit count. Report the representable limit
+    // instead of dropping a valid ETS description request or wrapping to zero.
     if (maxNumberOfElements > 0x0fff)
-        return;
+        maxNumberOfElements = 0x0fff;
 
     CemiFrame frame(8);
     APDU& apdu = frame.apdu();
@@ -833,9 +836,12 @@ void ApplicationLayer::propertyExtDescriptionReadResponse(AckType ack, Priority 
     uint16_t maxNumberOfElements, uint8_t access)
 {
     if (objectInstance > 0x0fff || propertyId > 0x0fff ||
-        propertyIndex > 0x0fff || descriptionType > 0x0f ||
-        maxNumberOfElements > 0x0fff)
+        propertyIndex > 0x0fff || descriptionType > 0x0f)
         return;
+
+    // Match the standard description response's 12-bit capacity limit.
+    if (maxNumberOfElements > 0x0fff)
+        maxNumberOfElements = 0x0fff;
 
     CemiFrame frame(16);
     APDU& apdu = frame.apdu();
