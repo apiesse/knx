@@ -34,7 +34,7 @@ checks (`test/espidf_secure_syntax.ps1`). They do not establish interoperability
 with ETS5/ETS6 or a physical bus. The old AN158-based note asserting tested ETS
 setup is not evidence for this rewritten implementation.
 
-The RoomUnit integration uses one application6, KNX XML20, targeting ETS5.7+ and
+The RoomUnit integration uses one Secure-capable application, KNX XML20, targeting ETS5.7+ and
 ETS6. It advertises only the TP device's Data Secure capacity, not Proxy or IP
 capabilities. A signed product database, XSD validation, actual Secure/plain
 downloads and hardware qualification are still required.

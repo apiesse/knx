@@ -404,18 +404,18 @@ static void roomUnitCapacityTest()
         20L * (32L - KNX_SECURE_P2P_KEYS) +
         18L * (128L - KNX_SECURE_GROUP_KEYS) +
         8L * (128L - KNX_SECURE_SENDERS) +
-        (116L - KNX_SECURE_GROUP_OBJECTS);
+        (126L - KNX_SECURE_GROUP_OBJECTS);
     const long sioBytes = device.security().saveSize() + profileAdjustment;
     const long metadataBytes = device.systemMetadataCapacity() + profileAdjustment;
-    assert(sioBytes == 4158);
-    assert(metadataBytes == 4242);
+    assert(sioBytes == 4168);
+    assert(metadataBytes == 4252);
     const auto align4 = [](size_t size) { return (size + 3) & ~size_t(3); };
-    // All 116 GOs linked to one distinct GA each, 96 parameter bytes, and full
+    // All 126 GOs linked to one distinct GA each, 96 parameter bytes, and full
     // SIO key/sender capacities. Extra associations consume the remaining pool.
     const size_t total = align4(metadataBytes) + align4(96) +
-                         align4(2 + 116 * 2) + align4(2 + 116 * 4) + align4(2 + 116 * 2);
-    assert(total == 5280);
-    assert(8192 - total == 2912);
+                         align4(2 + 126 * 2) + align4(2 + 126 * 4) + align4(2 + 126 * 2);
+    assert(total == 5368);
+    assert(8192 - total == 2824);
 }
 
 static void proxyRoutingTest()
