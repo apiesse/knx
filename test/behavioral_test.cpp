@@ -5,6 +5,7 @@
 #include <cstring>
 #include <vector>
 #include <cstdlib>
+#include <limits>
 
 static uint32_t now = 1;
 uint32_t millis() { return now; }
@@ -67,9 +68,13 @@ public:
     bool enabled() override { return true; }
     void enabled(bool) override {}
     using BauSystemBDevice::sendNextGroupTelegram;
+    using BauSystemBDevice::groupValueReadIndication;
     using BauSystemB::propertyValueReadIndication;
     using BauSystemB::propertyValueExtReadIndication;
-    InterfaceObject *getInterfaceObject(uint8_t) override { return &_addrTable; }
+    ApplicationLayer &app() { return _appLayer; }
+    InterfaceObject *getInterfaceObject(uint8_t index) override {
+        return index == 2 ? static_cast<InterfaceObject*>(&_assocTable) : &_addrTable;
+    }
     InterfaceObject *getInterfaceObject(ObjectType, uint16_t) override { return &_addrTable; }
     TableObject &table() { return _addrTable; }
     void load(TableObject &table, std::initializer_list<uint16_t> words) {
@@ -85,10 +90,10 @@ public:
         pushInt(_memory.toRelative(memory), saved.data() + 5);
         table.restore(saved.data());
     }
-    void loadGroups() {
+    void loadGroups(uint16_t first = 0xdc08, uint16_t second = 0xdc08) {
         load(_addrTable, {2, 0x1101, 0x1102});
         load(_assocTable, {2, 1, 1, 2, 2});
-        load(_groupObjTable, {2, 0xdc08, 0xdc08}); // 2-byte GO, communication/write/read/transmit/update
+        load(_groupObjTable, {2, first, second}); // defaults: 2-byte GO, C/W/R/T/U
     }
     void busWrite(uint16_t tsap, float value) {
         CemiFrame frame(3);
@@ -100,6 +105,42 @@ public:
         _appLayer.dataGroupIndication(NetworkLayerParameter, LowPriority, tsap, frame.apdu());
     }
 };
+
+static void associationDescriptionTest() {
+    FakePlatform platform;
+    Device device(platform);
+    // Replay the APDU on which ETS full download timed out: object 2, PID_TABLE.
+    // The real association property advertises 65535 elements internally.
+    CemiFrame request(4);
+    request.apdu().type(PropertyDescriptionRead);
+    request.apdu().data()[1] = 2;
+    request.apdu().data()[2] = PID_TABLE;
+    request.apdu().data()[3] = 0;
+    device.app().dataIndividualIndication(NetworkLayerParameter, LowPriority,
+        0x11ff, request.apdu());
+    assert(device.link.sent.size() == 1);
+    auto &response = device.link.sent.back().apdu();
+    assert(response.type() == PropertyDescriptionResponse);
+    assert(response.length() == 8);
+    assert(response.data()[1] == 2 && response.data()[2] == PID_TABLE);
+    assert(getWord(response.data() + 5) == 0x0fff);
+
+    // Both response formats must answer large capacities without wrapping them
+    // to zero, and must keep the four reserved count bits clear.
+    for (uint16_t capacity : {0, 1, 4095, 4096, 65535}) {
+        device.link.sent.clear();
+        device.app().propertyDescriptionReadResponse(AckRequested, LowPriority,
+            NetworkLayerParameter, 0x11ff, SecurityControl{}, 2, PID_TABLE,
+            1, false, PDT_GENERIC_04, capacity, ReadLv3 | WriteLv0);
+        device.app().propertyExtDescriptionReadResponse(AckRequested, LowPriority,
+            NetworkLayerParameter, 0x11ff, SecurityControl{}, OT_ASSOC_TABLE,
+            1, PID_TABLE, 1, 0, false, PDT_GENERIC_04, capacity, ReadLv3 | WriteLv0);
+        assert(device.link.sent.size() == 2);
+        const uint16_t expected = capacity > 0x0fff ? 0x0fff : capacity;
+        assert(getWord(device.link.sent[0].apdu().data() + 5) == expected);
+        assert(getWord(device.link.sent[1].apdu().data() + 13) == expected);
+    }
+}
 
 static void memoryTest() {
     FakePlatform p;
@@ -119,8 +160,100 @@ static void memoryTest() {
     releaseProperties(object);
 }
 
+static void diagnosticFlagsTest() {
+    // Real ETS descriptors: C alone (old diagnostics), C/T (window heartbeat),
+    // C/R/T (fixed diagnostics). Exercise both 1-byte area ID and 1-bit fault.
+    for (uint16_t flags : {0x0400, 0x4400, 0x4c00}) {
+        for (uint16_t size : {0x0007, 0x0000}) {
+            FakePlatform p;
+            Device d(p);
+            d.loadGroups(flags | size, 0xdc08);
+            struct Results { unsigned success = 0, failure = 0; } results;
+            d.transmittedGroupObjectCallback([](uint16_t, uint32_t, bool success, void *context) {
+                auto &r = *static_cast<Results*>(context);
+                if (success) ++r.success; else ++r.failure;
+            }, &results);
+            auto &go = d.groupObjectTable().get(1);
+            // Even R-enabled diagnostics must not invent a value before init.
+            d.groupValueReadIndication(1, LowPriority, NetworkLayerParameter, SecurityControl{});
+            assert(d.link.sent.empty());
+            const Dpt dpt = size ? DPT_Value_1_Ucount : DPT_Switch;
+            assert(go.value(KNXValue(static_cast<uint8_t>(size ? 2 : 1)), dpt));
+            d.sendNextGroupTelegram();
+            if (flags & 0x4000) {
+                assert(d.link.sent.size() == 1);
+                assert(d.link.sent.back().apdu().type() == GroupValueWrite);
+                d.link.confirm(0, true);
+                assert(results.success == 1 && results.failure == 0);
+            } else {
+                assert(d.link.sent.empty());
+                assert(results.success == 0 && results.failure == 1);
+            }
+            const size_t beforeRead = d.link.sent.size();
+            d.groupValueReadIndication(1, LowPriority, NetworkLayerParameter, SecurityControl{});
+            assert(d.link.sent.size() == beforeRead + ((flags & 0x0800) ? 1 : 0));
+            if (flags & 0x0800) {
+                assert(d.link.sent.back().apdu().type() == GroupValueResponse);
+                d.link.confirm(beforeRead, true);
+            }
+        }
+    }
+}
+
+static void enumerationCodecTest() {
+    // Exercise the actual codec and GroupObject write/read paths used by the
+    // firmware adapter. The former host adapter stub hid unsupported DPTs.
+    for (const Dpt &dpt : {DPT_HVACMode, DPT_HVACContrMode, Dpt(20, 1)}) {
+        FakePlatform platform;
+        Device device(platform);
+        device.loadGroups(0xdc07, 0xdc07); // 1-byte GO, C/W/R/T/U
+        auto &go = device.groupObjectTable().get(1);
+        const std::vector<uint8_t> values = dpt.subGroup == 102
+            ? std::vector<uint8_t>{0, 1, 3, 4}
+            : dpt.subGroup == 105 ? std::vector<uint8_t>{1, 3}
+                                 : std::vector<uint8_t>{0, 1, 127, 255};
+        for (uint8_t number : values) {
+            uint8_t payload[2] = {0xa5, 0x5a};
+            KNXValue decoded(static_cast<uint8_t>(0xaa));
+            assert(KNX_Encode_Value(KNXValue(static_cast<float>(number)), payload, 1, dpt));
+            assert(payload[0] == number && payload[1] == 0x5a);
+            assert(KNX_Decode_Value(payload, 1, dpt, decoded));
+            assert(static_cast<unsigned>(decoded) == number);
+            assert(go.value(KNXValue(static_cast<float>(number)), dpt));
+            assert(go.tryValue(decoded, dpt) && static_cast<unsigned>(decoded) == number);
+            const size_t before = device.link.sent.size();
+            device.sendNextGroupTelegram();
+            device.sendNextGroupTelegram(); // permit the round-robin cursor to wrap
+            assert(device.link.sent.size() == before + 1);
+            assert(device.link.sent.back().apdu().type() == GroupValueWrite);
+            assert(device.link.sent.back().apdu().data()[1] == number);
+            device.link.confirm(before, true);
+        }
+        for (size_t length : {size_t(0), size_t(2)}) {
+            uint8_t payload[2] = {0xa5, 0x5a};
+            KNXValue decoded(static_cast<uint8_t>(0xaa));
+            assert(!KNX_Encode_Value(KNXValue(1), payload, length, dpt));
+            assert(!KNX_Decode_Value(payload, length, dpt, decoded));
+            assert(payload[0] == 0xa5 && payload[1] == 0x5a);
+            assert(static_cast<unsigned>(decoded) == 0xaa);
+        }
+        for (double number : {-1.0, 256.0, 0.5, std::numeric_limits<double>::quiet_NaN(),
+                              std::numeric_limits<double>::infinity()}) {
+            uint8_t payload = 0xa5;
+            assert(!KNX_Encode_Value(KNXValue(number), &payload, 1, dpt));
+            assert(payload == 0xa5);
+        }
+        KNXValue decoded(static_cast<uint8_t>(0xaa));
+        assert(!KNX_Encode_Value(KNXValue(1), nullptr, 1, dpt));
+        assert(!KNX_Decode_Value(nullptr, 1, dpt, decoded));
+    }
+}
+
 int main() {
+    associationDescriptionTest();
     memoryTest();
+    diagnosticFlagsTest();
+    enumerationCodecTest();
     FakePlatform p;
     Device d(p);
     auto &table = d.table();
