@@ -142,6 +142,87 @@ class RouterInputContractTest(unittest.TestCase):
         )
 
 
+class SecretLoggingContractTest(unittest.TestCase):
+    def test_restore_does_not_dump_persisted_secure_metadata(self) -> None:
+        body = _function_body("memory.cpp", "Memory::readMemory")
+        self.assertNotRegex(
+            body, r"printHex\s*\([^;]*(?:flashStart|_metadataSize|buffer)[^;]*\)",
+            "persisted metadata can contain tool/group/IP/proxy keys and must never be dumped",
+        )
+
+    def test_cemi_property_handlers_do_not_log_attempted_or_returned_payloads(self) -> None:
+        for function in ("handleMPropRead", "handleMPropWrite", "handleMFunction"):
+            with self.subTest(function=function):
+                body = _function_body("cemi_server.cpp", "CemiServer::" + function)
+                body = re.sub(r"printHex\s*\([^,]*,\s*&responseData\[7\]\s*,\s*1\s*\)", "", body)
+                self.assertNotRegex(body, r"printHex\s*\([^;]*(?:frame\.data|responseData|result)[^;]*,[^;]*\)")
+
+
+class SecureDeviceCatalogContractTest(unittest.TestCase):
+    DEVICES = (("bau07B0.cpp", "Bau07B0", 6),
+               ("bau27B0.cpp", "Bau27B0", 7),
+               ("bau57B0.cpp", "Bau57B0", 7))
+
+    def test_management_indices_follow_one_based_published_catalog(self) -> None:
+        for filename, device, security_entry in self.DEVICES:
+            with self.subTest(device=device):
+                body = _function_body(filename, device + "::getInterfaceObject")
+                lookup = _assert_contains(
+                    self, body,
+                    r"PID_IO_LIST\s*\)->read\s*\(\s*static_cast<uint16_t>\s*\(\s*idx\s*\)\s*\+\s*1\s*,\s*1\s*,\s*type\s*\)\s*!=\s*1\s*\)\s*return\s+nullptr\s*;",
+                    "index lookup must read exactly its one-based IO-list entry, without uint8 wrap",
+                )
+                dispatch = _assert_contains(
+                    self, body,
+                    r"return\s+getInterfaceObject\s*\(\s*static_cast<ObjectType>\s*\(\s*getWord\s*\(\s*type\s*\)\s*\)\s*,\s*1\s*\)\s*;",
+                    "published object type must resolve through singleton instance one",
+                )
+                self.assertLess(lookup.end(), dispatch.start())
+                self.assertNotRegex(body, r"\bswitch\b|\bcase\b")
+                constructor = _function_body(filename, device + "::" + device)
+                application_entries = re.findall(
+                    r"prop->write\s*\(\s*(\d+)\s*,\s*\(uint16_t\)\s*OT_APPLICATION_PROG\s*\)", constructor)
+                self.assertEqual(application_entries, ["5"], "no phantom second application object")
+                security_entries = re.findall(
+                    r"prop->write\s*\(\s*(\d+)\s*,\s*\(uint16_t\)\s*OT_SECURITY\s*\)", constructor)
+                self.assertTrue(security_entries)
+                self.assertEqual(set(security_entries), {str(security_entry)})
+
+    def test_singleton_type_lookup_rejects_nonexistent_instances(self) -> None:
+        for filename, device, _ in self.DEVICES:
+            with self.subTest(device=device):
+                body = _function_body(filename, device + "::getInterfaceObject", 1)
+                guard = _assert_contains(
+                    self, body,
+                    r"if\s*\(\s*objectInstance\s*!=\s*1\s*\)\s*return\s+nullptr\s*;",
+                    "singleton instances zero/two must not alias advertised instance one",
+                )
+                self.assertLess(guard.end(), body.find("switch"))
+                self.assertNotIn("(void) objectInstance", body)
+
+    def test_plain_group_traffic_uses_per_object_flags_not_global_secure_mode(self) -> None:
+        for function in ("groupValueReadIndication", "groupValueWriteIndication",
+                         "groupValueReadAppLayerConfirm"):
+            with self.subTest(function=function):
+                body = _function_body("bau_systemB_device.cpp", "BauSystemBDevice::" + function)
+                self.assertIn("getGroupObjectSecurity(asap)", body)
+                self.assertIn("secCtrl.toolAccess", body)
+                self.assertNotIn("isSecurityModeEnabled", body)
+        outbound = _function_body("secure_application_layer.cpp", "SecureApplicationLayer::dataGroupRequest")
+        _assert_contains(
+            self, outbound,
+            r"if\s*\(\s*control.dataSecurity\s*==\s*None\s*\)\s*\{\s*ApplicationLayer::dataGroupRequest\s*\([^;]+;\s*return\s*;\s*\}",
+            "secure-capable firmware must retain plain group transmission without a loaded key table",
+        )
+
+    def test_rf_domain_write_preserves_authenticated_tool_context(self) -> None:
+        body = _function_body("bau27B0.cpp", "Bau27B0::domainAddressSerialNumberWriteIndication")
+        _assert_contains(
+            self, body, r"managementWriteAllowed\s*\(\s*secCtrl\s*\)",
+            "RF domain download must use the request's secure identity, not anonymous defaults",
+        )
+
+
 class ResetCascadeContractTest(unittest.TestCase):
     def test_rf_bau_resets_all_device_tables_before_rf_medium(self) -> None:
         body = _function_body("bau27B0.cpp", "Bau27B0::doMasterReset")
@@ -190,7 +271,7 @@ class ManagementCallbackContractTest(unittest.TestCase):
         gate = _assert_contains(
             self,
             body,
-            r"if\s*\(\s*!managementWriteAllowed\s*\(\s*\)\s*\)"
+            r"if\s*\(\s*!managementWriteAllowed\s*\(\s*secCtrl\s*\)\s*\)"
             r"\s*\{[^{}]*ReturnCodes::AccessDenied[^{}]*return\s*;[^{}]*\}",
             "standard function-property command needs an early fail-closed gate",
         )
@@ -200,7 +281,7 @@ class ManagementCallbackContractTest(unittest.TestCase):
             if position >= 0
         )
         self.assertLess(gate.start(), callback)
-        self.assertIn("propertyCommandAllowed(prop)", body)
+        self.assertIn("propertyCommandAllowed(prop, secCtrl)", body)
         self.assertRegex(body, r"prop\s*==\s*nullptr\s*&&\s*_functionProperty\s*!=\s*0")
 
     def test_extended_function_command_denies_before_object_dispatch(self) -> None:
@@ -210,19 +291,19 @@ class ManagementCallbackContractTest(unittest.TestCase):
         gate = _assert_contains(
             self,
             body,
-            r"if\s*\(\s*!managementWriteAllowed\s*\(\s*\)\s*\)"
+            r"if\s*\(\s*!managementWriteAllowed\s*\(\s*secCtrl\s*\)\s*\)"
             r"\s*\{[^{}]*ReturnCodes::AccessDenied[^{}]*return\s*;[^{}]*\}",
             "extended function-property command needs an early fail-closed gate",
         )
         self.assertLess(gate.start(), body.find("getInterfaceObject"))
-        self.assertIn("propertyCommandAllowed(prop)", body)
+        self.assertIn("propertyCommandAllowed(prop, secCtrl)", body)
 
     def test_virtual_state_callback_cannot_bypass_management_window(self) -> None:
         body = _function_body(
             "bau_systemB.cpp", "BauSystemB::functionPropertyStateIndication"
         )
         guarded_callback = re.compile(
-            r"prop\s*==\s*nullptr\s*&&\s*managementWriteAllowed\s*\(\s*\)"
+            r"prop\s*==\s*nullptr\s*&&\s*managementWriteAllowed\s*\(\s*secCtrl\s*\)"
             r"\s*&&\s*_functionPropertyState\s*!=\s*0"
         )
         self.assertGreaterEqual(
@@ -232,7 +313,7 @@ class ManagementCallbackContractTest(unittest.TestCase):
         )
         self.assertRegex(
             body,
-            r"if\s*\(\s*managementWriteAllowed\s*\(\s*\)\s*&&\s*"
+            r"if\s*\(\s*managementWriteAllowed\s*\(\s*secCtrl\s*\)\s*&&\s*"
             r"_functionPropertyState\s*!=\s*0\s*\)",
         )
 
@@ -240,7 +321,7 @@ class ManagementCallbackContractTest(unittest.TestCase):
 class ManagementMemoryWriteContractTest(unittest.TestCase):
     def _assert_checked_write(self, qualified_name: str, verify_response: str) -> None:
         body = _function_body("bau_systemB.cpp", qualified_name)
-        authorization = body.find("!managementMemoryAccessAllowed()")
+        authorization = body.find("!managementMemoryAccessAllowed(secCtrl)")
         destination = body.find("_memory.toAbsoluteChecked(memoryAddress, number)")
         invalid = _assert_contains(
             self,
@@ -274,7 +355,7 @@ class ManagementMemoryWriteContractTest(unittest.TestCase):
 
     def test_extended_memory_write_returns_checked_memory_only(self) -> None:
         body = _function_body("bau_systemB.cpp", "BauSystemB::memoryExtWriteIndication")
-        authorization = body.find("!managementMemoryAccessAllowed()")
+        authorization = body.find("!managementMemoryAccessAllowed(secCtrl)")
         destination = body.find("_memory.toAbsoluteChecked(memoryAddress, number)")
         invalid = body.find("destination == nullptr")
         write = body.find("_memory.writeMemory(memoryAddress, number, data)")
@@ -397,7 +478,7 @@ class KnxIpTunnelBoundaryContractTest(unittest.TestCase):
         connect = body[body.find("case ConnectRequest:"):
                        body.find("case ConnectionStateRequest:")]
         self.assertIn("length < criOffset + 2", connect)
-        self.assertIn("connectionType == TUNNEL_CONNECTION && criLength == LEN_CRI", connect)
+        self.assertIn("connectionType == TUNNEL_CONNECTION && (criLength == LEN_CRI || criLength == 6)", connect)
         self.assertIn("connectionType == DEVICE_MGMT_CONNECTION && criLength == 2", connect)
         self.assertIn("unknownType && criLength >= 2", connect)
         self.assertIn("criOffset + criLength != length", connect)
@@ -417,9 +498,11 @@ class KnxIpTunnelBoundaryContractTest(unittest.TestCase):
 
     def test_knxip_service_and_cemi_message_classes_are_not_interchangeable(self) -> None:
         config = _function_body("ip_tunnel_server.cpp", "validDeviceConfigurationCemi")
-        for message in ("M_PropRead_req", "M_PropWrite_req", "M_Reset_req"):
+        for message in ("M_PropRead_req", "M_PropWrite_req", "M_Reset_req",
+                        "M_FuncPropCommand_req", "M_FuncPropStateRead_req",
+                        "T_data_individual_req", "T_data_connected_req"):
             self.assertIn(message, config)
-        for message in ("L_data_req", "L_data_con", "L_data_ind"):
+        for message in ("L_data_req", "L_data_con", "L_data_ind", "T_data_individual_ind", "T_data_connected_ind"):
             self.assertNotIn(message, config)
         self.assertRegex(config, r"default\s*:\s*return\s+false")
 
@@ -454,7 +537,7 @@ class KnxIpTunnelBoundaryContractTest(unittest.TestCase):
 
     def _assert_endpoint_precedes_dispatch(self, function: str, dispatch: str) -> str:
         body = _function_body("ip_tunnel_server.cpp", function)
-        endpoint = body.find("endpointMatches(tun, src_addr, src_port, false)")
+        endpoint = body.find("matchesEndpoint(tun, src_addr, src_port, false)")
         self.assertTrue(0 <= endpoint < body.find(dispatch))
         return body
 
@@ -462,14 +545,15 @@ class KnxIpTunnelBoundaryContractTest(unittest.TestCase):
         body = self._assert_endpoint_precedes_dispatch(
             "IpTunnelServer::HandleTunnelingRequest", "_cemiServer.frameReceived"
         )
-        self.assertLess(body.find("SequenceCounter_R"), body.find("_cemiServer.frameReceived"))
+        self.assertLess(body.find("SequenceCounter_R"), body.rfind("_cemiServer.frameReceived"))
+        self.assertIn("_secureSessions.isTcp(tun->SecureSessionId)", body)
         self.assertIn("E_SEQUENCE_NUMBER", body)
 
     def test_tunnel_source_is_always_bound_to_authenticated_channel_address(self) -> None:
         body = _function_body(
             "ip_tunnel_server.cpp", "IpTunnelServer::HandleTunnelingRequest"
         )
-        endpoint = body.find("endpointMatches(tun, src_addr, src_port, false)")
+        endpoint = body.find("matchesEndpoint(tun, src_addr, src_port, false)")
         bind = body.find("tunnReq.frame().sourceAddress(tun->IndividualAddress)")
         dispatch = body.find("_cemiServer.frameReceived")
         self.assertTrue(0 <= endpoint < bind < dispatch)
@@ -487,7 +571,7 @@ class KnxIpTunnelBoundaryContractTest(unittest.TestCase):
         body = _function_body(
             "ip_tunnel_server.cpp", "IpTunnelServer::HandleTunnelAcknowledgement"
         )
-        self.assertIn("endpointMatches(tun, src_addr, src_port, false)", body)
+        self.assertIn("matchesEndpoint(tun, src_addr, src_port, false)", body)
         self.assertIn("tun->SequenceCounter_S - 1", body)
 
     def test_channel_ids_are_unique_across_data_and_management_slots(self) -> None:
@@ -509,13 +593,18 @@ class KnxIpTunnelBoundaryContractTest(unittest.TestCase):
 
         connect = _function_body("ip_tunnel_server.cpp", "IpTunnelServer::HandleConnectRequest")
         self.assertNotIn("sendBytesUniCast(connRequest.hpaiCtrl().ipAddress()", connect)
-        self.assertIn("sendBytesUniCast(src_addr, responsePort", connect)
+        self.assertIn("sendUnicast(src_addr, responsePort", connect)
 
         description = _function_body(
             "ip_tunnel_server.cpp", "IpTunnelServer::HandleDescriptionRequest"
         )
         self.assertNotIn("sendBytesUniCast(descReq.hpaiCtrl().ipAddress()", description)
-        self.assertIn("sendBytesUniCast(src_addr, responsePort", description)
+        self.assertIn("sendUnicast(src_addr, responsePort", description)
+
+    def test_secure_channels_are_bound_to_session_before_endpoint_dispatch(self) -> None:
+        body = _function_body("ip_tunnel_server.cpp", "IpTunnelServer::matchesEndpoint")
+        self.assertIn("tunnel->SecureSessionId != _dispatchSession", body)
+        self.assertLess(body.find("SecureSessionId"), body.find("endpointMatches"))
 
 
 class IpDataLinkBoundaryContractTest(unittest.TestCase):
@@ -531,17 +620,20 @@ class IpDataLinkBoundaryContractTest(unittest.TestCase):
         self.assertTrue(0 <= routing_case < routing_validation < routing_view)
         self.assertIn("!= L_data_ind", body[routing_case:routing_view])
 
-        search_case = body.find("case SearchRequest:")
-        search_guard = body.find("validSearchHpai", search_case)
-        search_view = body.find("KnxIpSearchRequest searchRequest", search_case)
-        self.assertTrue(0 <= search_case < search_guard < search_view)
+        search_case = body[body.find("case SearchRequest:"):body.find("default:")]
+        self.assertIn("handleSearchRequest(buffer, len, remoteAddr, remotePort)", search_case)
+        search = _function_body("ip_data_link_layer.cpp", "IpDataLinkLayer::handleSearchRequest")
+        envelope = search.find("validKnxIpDatagram")
+        hpai = search.find("validSearchHpai")
+        exact_length = search.find("length != KNXIP_HEADER_LEN + LEN_IPHPAI")
+        view = search.find("KnxIpSearchRequest searchRequest")
+        self.assertTrue(0 <= envelope < hpai < exact_length < view)
 
     def test_search_responses_are_bound_to_actual_source_ip(self) -> None:
-        body = _function_body("ip_data_link_layer.cpp", "IpDataLinkLayer::loop")
-        classic = body[body.find("case SearchRequest:"):body.find("case SearchRequestExt:")]
+        classic = _function_body("ip_data_link_layer.cpp", "IpDataLinkLayer::handleSearchRequest")
         self.assertIn("validSearchHpai", classic)
-        self.assertIn("sendBytesUniCast(remoteAddr, responsePort", classic)
-        self.assertNotIn("sendBytesUniCast(hpai.ipAddress()", classic)
+        self.assertIn("sendSearchResponse(remoteAddr, responsePort", classic)
+        self.assertNotIn("sendSearchResponse(searchRequest.hpai().ipAddress()", classic)
 
         extended = _function_body(
             "ip_data_link_layer.cpp", "IpDataLinkLayer::loopHandleSearchRequestExtended"
@@ -549,8 +641,26 @@ class IpDataLinkBoundaryContractTest(unittest.TestCase):
         self.assertIn("searchRequest.valid()", extended)
         self.assertIn("_deviceObject.progMode()", extended)
         self.assertNotIn("knx.progMode()", extended)
-        self.assertIn("sendBytesUniCast(remoteAddr, responsePort", extended)
-        self.assertNotIn("sendBytesUniCast(searchRequest.hpai().ipAddress()", extended)
+        self.assertIn("sendSearchResponse(remoteAddr, responsePort", extended)
+        self.assertNotIn("sendSearchResponse(searchRequest.hpai().ipAddress()", extended)
+        responder = _function_body("ip_data_link_layer.cpp", "IpDataLinkLayer::sendSearchResponse")
+        self.assertIn("_ipTunnelServer.sendDiscoveryResponse(address, port, packet, length)", responder)
+        self.assertIn("_platform.sendBytesUniCast(address, port, packet, length)", responder)
+
+    def test_wrapped_discovery_uses_session_responder_and_contextual_authorization(self) -> None:
+        dispatch = _function_body("ip_tunnel_server.cpp", "IpTunnelServer::HandleIpFrame")
+        search = dispatch[dispatch.find("case SearchRequest:"):dispatch.find("case ConnectRequest:")]
+        guard = search.find("validHpai")
+        endpoint = search.find("hpaiAddressMatchesSource")
+        handler = search.find("_discoveryHandler->handleSearchRequest")
+        self.assertTrue(0 <= guard < endpoint < handler)
+        self.assertIn("src_addr, src_port, tcp", search)
+        header = _read_code("ip_tunnel_server.h")
+        self.assertIn("return sendUnicast(address, port, packet, length)", header)
+        dib = _function_body("knx_ip_search_response_extended.cpp", "KnxIpSearchResponseExtended::setTunnelingInfo")
+        self.assertIn("!parameters.tunnelingUser(user, i + 1)", dib)
+        self.assertIn("flags &= ~(1U << 1)", dib)
+        self.assertIn("SECURED_SERVICE_FAMILIES = 0x06", _read_code("knx_ip_dib.h"))
 
     def test_extended_search_srp_parser_fails_closed_on_bad_lengths(self) -> None:
         body = _function_body(

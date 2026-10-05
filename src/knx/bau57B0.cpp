@@ -12,10 +12,16 @@ Bau57B0::Bau57B0(Platform& platform)
     : BauSystemBDevice(platform),
       DataLinkLayerCallbacks()
       , _ipParameters(_deviceObj, platform)
-      , _dlLayer(_deviceObj, _ipParameters, _netLayer.getInterface(), _platform, *this, (DataLinkLayerCallbacks*) this)
-#ifdef USE_CEMI_SERVER
-      ,
-      _cemiServer(*this)
+      , _dlLayer(_deviceObj, _ipParameters, _netLayer.getInterface(), _platform, *this,
+#ifdef KNX_TUNNELING
+                 _ipTunnelServer,
+#endif
+                 (DataLinkLayerCallbacks*) this)
+#ifdef KNX_TUNNELING
+      , _cemiServer(*this, _ipTunnelServer)
+      , _ipTunnelServer(_deviceObj, _ipParameters, platform, _cemiServer)
+#elif defined(USE_CEMI_SERVER)
+      , _cemiServer(*this)
 #endif
 {
     _netLayer.getInterface().dataLinkLayer(_dlLayer);
@@ -52,44 +58,15 @@ Bau57B0::Bau57B0(Platform& platform)
 
 InterfaceObject* Bau57B0::getInterfaceObject(uint8_t idx)
 {
-    switch (idx)
-    {
-        case 0:
-            return &_deviceObj;
-        case 1:
-            return &_addrTable;
-        case 2:
-            return &_assocTable;
-        case 3:
-            return &_groupObjTable;
-        case 4:
-            return &_appProgram;
-        case 5: // would be app_program 2
-            return nullptr;
-        case 6:
-            return &_ipParameters;
-#if defined(USE_DATASECURE) && defined(USE_CEMI_SERVER)
-        case 7:
-            return &_secIfObj;
-        case 8:
-            return &_cemiServerObject;
-#elif defined(USE_CEMI_SERVER)
-        case 7:
-            return &_cemiServerObject;
-#elif defined(USE_DATASECURE)
-        case 7:
-            return &_secIfObj;
-#endif
-        default:
-            return nullptr;
-    }
+    uint8_t type[2];
+    if (_deviceObj.property(PID_IO_LIST)->read(static_cast<uint16_t>(idx) + 1, 1, type) != 1)
+        return nullptr;
+    return getInterfaceObject(static_cast<ObjectType>(getWord(type)), 1);
 }
 
 InterfaceObject* Bau57B0::getInterfaceObject(ObjectType objectType, uint16_t objectInstance)
 {
-    // We do not use it right now. 
-    // Required for coupler mode as there are multiple router objects for example
-    (void) objectInstance;
+    if (objectInstance != 1) return nullptr;
 
     switch (objectType)
     {
@@ -140,6 +117,9 @@ void Bau57B0::loop()
 {
     _dlLayer.loop();
     BauSystemBDevice::loop();
+#ifdef KNX_TUNNELING
+    _ipTunnelServer.loop();
+#endif
 #ifdef USE_CEMI_SERVER
     _cemiServer.loop();
 #endif

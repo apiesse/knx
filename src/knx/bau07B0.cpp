@@ -47,42 +47,18 @@ Bau07B0::Bau07B0(Platform& platform)
 
 InterfaceObject* Bau07B0::getInterfaceObject(uint8_t idx)
 {
-    switch (idx)
-    {
-        case 0:
-            return &_deviceObj;
-        case 1:
-            return &_addrTable;
-        case 2:
-            return &_assocTable;
-        case 3:
-            return &_groupObjTable;
-        case 4:
-            return &_appProgram;
-        case 5: // would be app_program 2
-            return nullptr;
-#if defined(USE_DATASECURE) && defined(USE_CEMI_SERVER)
-        case 6:
-            return &_secIfObj;
-        case 7:
-            return &_cemiServerObject;
-#elif defined(USE_CEMI_SERVER)
-        case 6:
-            return &_cemiServerObject;
-#elif defined(USE_DATASECURE)
-        case 6:
-            return &_secIfObj;
-#endif
-        default:
-            return nullptr;
-    }
+    // PID_IO_LIST is one-based, management object indices are zero-based.
+    // Derive from the actual catalog instead of reserving a phantom second
+    // application object that shifted Secure/cEMI away from their advertised IO.
+    uint8_t type[2];
+    if (_deviceObj.property(PID_IO_LIST)->read(static_cast<uint16_t>(idx) + 1, 1, type) != 1)
+        return nullptr;
+    return getInterfaceObject(static_cast<ObjectType>(getWord(type)), 1);
 }
 
 InterfaceObject* Bau07B0::getInterfaceObject(ObjectType objectType, uint16_t objectInstance)
 {
-    // We do not use it right now. 
-    // Required for coupler mode as there are multiple router objects for example
-    (void) objectInstance;
+    if (objectInstance != 1) return nullptr;
 
     switch (objectType)
     {

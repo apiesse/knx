@@ -9,7 +9,16 @@ class DeviceObject: public InterfaceObject
 public:
     // increase this version anytime DeviceObject-API changes 
     // the following value represents the serialized representation of DeviceObject.
-    const uint16_t apiVersion = 2;
+    // Secure objects change the serialized layout; never interpret a plain blob
+    // (or a blob from a different Secure feature set) as commissioned keys.
+    const uint16_t apiVersion = 2
+#ifdef USE_DATASECURE
+        | 0x0100
+#endif
+#ifdef USE_IPSECURE
+        | 0x0200
+#endif
+        ;
     
     DeviceObject();
     uint8_t* save(uint8_t* buffer) override;

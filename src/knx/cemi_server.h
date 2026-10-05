@@ -10,6 +10,7 @@
 class BauSystemB;
 class DataLinkLayer;
 class CemiFrame;
+class APDU;
 class IpTunnelServer;
 
 /**
@@ -59,6 +60,10 @@ class CemiServer
     void handleMPropRead(CemiFrame& frame, uint8_t channelId);
     void handleMPropWrite(CemiFrame& frame, uint8_t channelId);
     void handleMReset(CemiFrame& frame, uint8_t channelId);
+    void handleMFunction(CemiFrame& frame, uint8_t channelId, bool command);
+    void handleTData(CemiFrame& frame, uint8_t channelId, bool connected);
+    void sendLocalManagementResponse(APDU& response, uint8_t channelId, bool connected);
+    void sendManagementFrame(CemiFrame& frame, uint8_t channelId);
 
     DataLinkLayer* _dataLinkLayer = nullptr;
 #ifdef KNX_TUNNELING

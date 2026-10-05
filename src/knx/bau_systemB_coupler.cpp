@@ -8,6 +8,7 @@ BauSystemBCoupler::BauSystemBCoupler(Platform& platform) :
     _platform(platform),
 #ifdef USE_DATASECURE
     _appLayer(_deviceObj, _secIfObj, *this),
+    _secureProxy(_appLayer),
 #else
     _appLayer(*this),
 #endif
@@ -15,6 +16,10 @@ BauSystemBCoupler::BauSystemBCoupler(Platform& platform) :
     _netLayer(_deviceObj, _transLayer)
 {
     _appLayer.transportLayer(_transLayer);
+#ifdef USE_DATASECURE
+    _secIfObj.bindPlatform(platform);
+    _netLayer.secureProxy(_secureProxy);
+#endif
     _transLayer.networkLayer(_netLayer);
     _memory.addSaveRestore(&_deviceObj);
 #ifdef USE_DATASECURE
@@ -56,5 +61,6 @@ void BauSystemBCoupler::doMasterReset(EraseCode eraseCode, uint8_t channel)
 
 #ifdef USE_DATASECURE
     _secIfObj.masterReset(eraseCode, channel);
+    _secureProxy.clear();
 #endif
 }

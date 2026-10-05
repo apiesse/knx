@@ -28,6 +28,17 @@ class BauSystemB : protected BusAccessUnit
     Memory& memory();
     void readMemory();
     void writeMemory();
+    // cEMI M_Prop v1 and M_Reset have anonymous management identity, including
+    // when transported inside an authenticated KNXnet/IP Secure session.
+    bool anonymousManagementWriteAllowed() { return managementWriteAllowed(SecurityControl{}); }
+    // Device-management v2 uses local transport primitives, never the bus.
+    // Response callbacks are synchronous and their context is not retained.
+    virtual bool localManagementIndication(APDU& request, bool connected,
+                                          void (*respond)(void*, APDU&), void* context)
+    { (void)request; (void)connected; (void)respond; (void)context; return false; }
+    void anonymousFunctionProperty(ObjectType objectType, uint8_t objectInstance,
+                                   uint8_t propertyId, bool command, uint8_t* data,
+                                   uint8_t length, uint8_t* result, uint8_t& resultLength);
     /* Trusted local factory reset: clears the KNX application (address/association/GO
        tables + parameters) while preserving the individual address. This entry point
        is deliberately separate from A_Restart received from the bus. */
@@ -117,15 +128,19 @@ class BauSystemB : protected BusAccessUnit
     void nextRestartState();
     virtual void doMasterReset(EraseCode eraseCode, uint8_t channel);
 
-    /* Classic KNX management in this stack has no persisted access-key table. Fail
-       closed by default and use the physical programming-mode window as the
-       authorization boundary. KNX_MANAGEMENT_ALLOW_UNGATED is a legacy-only opt-out. */
-    uint8_t managementAccessLevel();
-    bool managementMemoryAccessAllowed();
-    bool managementWriteAllowed();
-    bool propertyReadAllowed(const Property* property);
-    bool propertyWriteAllowed(const Property* property);
-    bool propertyCommandAllowed(const Property* property);
+    /* Authenticated Data Secure tool requests grant level 0 without requiring
+       physical programming mode. Secure mode rejects anonymous mutations and
+       privileged reads, including cEMI M_Prop v1. Legacy unsecured commissioning
+       retains the physical programming window. The legacy opt-out cannot bypass
+       Secure mode or expose keys. */
+    bool secureManagementEnabled();
+    bool sensitiveSecurityProperty(const Property* property);
+    uint8_t managementAccessLevel(const SecurityControl& secCtrl = SecurityControl{});
+    bool managementMemoryAccessAllowed(const SecurityControl& secCtrl = SecurityControl{});
+    bool managementWriteAllowed(const SecurityControl& secCtrl = SecurityControl{});
+    bool propertyReadAllowed(const Property* property, const SecurityControl& secCtrl = SecurityControl{});
+    bool propertyWriteAllowed(const Property* property, const SecurityControl& secCtrl = SecurityControl{});
+    bool propertyCommandAllowed(const Property* property, const SecurityControl& secCtrl = SecurityControl{});
 
     enum RestartState
     {

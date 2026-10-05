@@ -1,11 +1,10 @@
 cmake_minimum_required(VERSION 3.16)
-set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
-project(openknx_management_policy_tests LANGUAGES CXX)
+project(openknx_management_policy_tests LANGUAGES C CXX)
 
 enable_testing()
 
-file(GLOB behavioral_sources ../src/knx/*.cpp)
-list(FILTER behavioral_sources EXCLUDE REGEX "/(bau07B0|tpuart_data_link_layer)\\.cpp$")
+file(GLOB behavioral_sources CONFIGURE_DEPENDS ../src/knx/*.cpp)
+list(FILTER behavioral_sources EXCLUDE REGEX "/(bau07B0|bau091A|bau2920|tpuart_data_link_layer)\\.cpp$")
 add_library(behavioral_core STATIC ${behavioral_sources})
 target_compile_features(behavioral_core PUBLIC cxx_std_14)
 target_compile_definitions(behavioral_core PUBLIC MASK_VERSION=0x07B0 NO_KNX_CONFIG KNX_NO_PRINT KNX_FLASH_SIZE=4096)
@@ -18,9 +17,58 @@ if(ENABLE_SANITIZERS)
     foreach(target behavioral_core behavioral_test)
         target_compile_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
         target_link_options(${target} PRIVATE -fsanitize=address,undefined)
+        # Container ASLR/PIE can crash libasan before its initialization/main.
+        # Keep Linux sanitizer fixtures non-PIE for reproducible diagnostics;
+        # this does not change firmware or normal host-build flags.
+        if(UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_options(${target} PRIVATE -fno-pie)
+            target_link_options(${target} PRIVATE -no-pie)
+        endif()
     endforeach()
 endif()
 add_test(NAME behavioral_test COMMAND behavioral_test)
+
+# Secure variants compile and link the actual implementation, including AES C.
+# Host asymmetric primitives use the independently maintained OpenSSL backend.
+find_package(OpenSSL REQUIRED)
+foreach(secure_variant device ip)
+    add_library(secure_${secure_variant}_core STATIC ${behavioral_sources} ../src/knx/aes.c)
+    target_compile_features(secure_${secure_variant}_core PUBLIC cxx_std_14)
+    target_compile_definitions(secure_${secure_variant}_core PUBLIC
+        NO_KNX_CONFIG KNX_NO_PRINT KNX_FLASH_SIZE=16384 USE_DATASECURE KNX_SECURE_OPENSSL)
+    if(secure_variant STREQUAL "device")
+        target_compile_definitions(secure_${secure_variant}_core PUBLIC MASK_VERSION=0x07B0)
+    else()
+        target_compile_definitions(secure_${secure_variant}_core PUBLIC
+            MASK_VERSION=0x091A USE_IP=1 USE_TP=1 USE_CEMI_SERVER=1 USE_IPSECURE KNX_TUNNELING=1 KNX_SERVICE_FAMILY_CORE=2)
+    endif()
+    target_include_directories(secure_${secure_variant}_core PUBLIC ../src "${TPUART_SOURCE_DIR}/src" stubs)
+    target_compile_options(secure_${secure_variant}_core PUBLIC
+        "$<$<COMPILE_LANGUAGE:CXX>:-include>" "$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_CURRENT_SOURCE_DIR}/stubs/host_network_compat.h>")
+    target_link_libraries(secure_${secure_variant}_core PUBLIC OpenSSL::Crypto)
+    if(ENABLE_SANITIZERS)
+        target_compile_options(secure_${secure_variant}_core PUBLIC -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(secure_${secure_variant}_core PUBLIC -fsanitize=address,undefined)
+        if(UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_options(secure_${secure_variant}_core PUBLIC -fno-pie)
+            target_link_options(secure_${secure_variant}_core PUBLIC -no-pie)
+        endif()
+    endif()
+endforeach()
+foreach(secure_test security_state data_secure secure_proxy ip_secure)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${secure_test}_test.cpp")
+        add_executable(${secure_test}_test ${secure_test}_test.cpp)
+        if(NOT secure_test STREQUAL "ip_secure")
+            target_link_libraries(${secure_test}_test PRIVATE secure_device_core)
+        else()
+            target_link_libraries(${secure_test}_test PRIVATE secure_ip_core)
+        endif()
+        add_test(NAME ${secure_test}_test COMMAND ${secure_test}_test)
+    endif()
+endforeach()
+add_executable(secure_proxy_ip_test secure_proxy_test.cpp)
+target_link_libraries(secure_proxy_ip_test PRIVATE secure_ip_core)
+add_test(NAME secure_proxy_ip_test COMMAND secure_proxy_ip_test)
 
 # These are object targets on purpose: OpenKNX does not currently provide a
 # linkable native-host platform implementation.  They still compile the real

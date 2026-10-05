@@ -101,14 +101,14 @@ InterfaceObject* Bau2920::getInterfaceObject(ObjectType objectType, uint16_t obj
 {
     // We do not use it right now. 
     // Required for coupler mode as there are multiple router objects for example
-    (void) objectInstance;
 
     switch (objectType)
     {
         case OT_DEVICE:
             return &_deviceObj;
         case OT_ROUTER:
-            return objectInstance == 0 ? &_rtObjPrimary : &_rtObjSecondary;
+            if (objectInstance <= 1) return &_rtObjPrimary;
+            return objectInstance == 2 ? &_rtObjSecondary : nullptr;
         case OT_APPLICATION_PROG:
             return &_appProgram;
         case OT_RF_MEDIUM:

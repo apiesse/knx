@@ -5,6 +5,59 @@
 #include "tpdu.h"
 #include "cemi_frame.h"
 #include "bits.h"
+#include <cstring>
+
+#ifdef USE_DATASECURE
+bool NetworkLayerCoupler::refreshSecureProxy()
+{
+    const bool tablesPresent = (_rtObjPrimary && _rtObjPrimary->secureProxyEntryCount()) ||
+                               (_rtObjSecondary && _rtObjSecondary->secureProxyEntryCount());
+    if (!tablesPresent)
+    {
+        if (_proxyTableActive && _secureProxy) _secureProxy->clear();
+        _proxyTableActive = false;
+        return true;
+    }
+    _proxyTableActive = true;
+    if (!_secureProxy || !_proxyDecoder) return false;
+    // This workspace is wiped on every exit, including malformed/unsupported
+    // records. Unknown standard settings must block routing, never downgrade.
+    struct Workspace {
+        SecureProxyRule rules[SecureProxy::MaxRules];
+        SecureProxyRule candidate;
+        ~Workspace() {
+            volatile uint8_t* p = reinterpret_cast<volatile uint8_t*>(this);
+            for (size_t i = 0; i < sizeof(*this); ++i) p[i] = 0;
+        }
+    } workspace;
+    uint16_t count = 0;
+    RouterObject* routers[2] = {_rtObjPrimary, _rtObjSecondary};
+    for (RouterObject* router : routers)
+    {
+        if (!router) continue;
+        for (uint16_t i = 1; i <= router->secureProxyEntryCount(); ++i)
+        {
+            if (!router->readSecureProxyRule(_proxyDecoder, i, workspace.candidate)) return false;
+            bool duplicate = false;
+            for (uint16_t j = 0; j < count; ++j)
+            {
+                const auto& a = workspace.rules[j]; const auto& b = workspace.candidate;
+                if (a.groupAddress != b.groupAddress) continue;
+                if (a.primarySecure != b.primarySecure || a.secondarySecure != b.secondarySecure ||
+                    a.primaryToSecondary != b.primaryToSecondary || a.secondaryToPrimary != b.secondaryToPrimary ||
+                    std::memcmp(a.key, b.key, 16)) return false;
+                duplicate = true;
+            }
+            if (!duplicate)
+            {
+                if (count == SecureProxy::MaxRules) return false;
+                workspace.rules[count++] = workspace.candidate;
+            }
+        }
+    }
+    return _secureProxy->configure(workspace.rules, count);
+}
+#endif
 
 NetworkLayerCoupler::NetworkLayerCoupler(DeviceObject &deviceObj,
                                          TransportLayer& layer) :
@@ -252,6 +305,12 @@ bool NetworkLayerCoupler::isRoutedIndividualAddress(uint16_t individualAddress, 
 void NetworkLayerCoupler::sendMsgHopCount(AckType ack, AddressType addrType, uint16_t destination, NPDU& npdu, Priority priority,
                                           SystemBroadcast broadcastType, uint8_t sourceInterfaceIndex, uint16_t source)
 {
+    if (sourceInterfaceIndex > kSecondaryIfIndex || !_rtObjPrimary) return;
+#ifdef USE_DATASECURE
+    if (!refreshSecureProxy()) return;
+    if (_secureProxy && (addrType == IndividualAddress || destination == 0) &&
+        !_secureProxy->nonGroupAllowed(source, destination, sourceInterfaceIndex)) return;
+#endif
     uint8_t interfaceIndex = (sourceInterfaceIndex == kSecondaryIfIndex) ? kPrimaryIfIndex : kSecondaryIfIndex;
 
     uint8_t lcconfig = LCCONFIG::PHYS_FRAME_ROUT | LCCONFIG::PHYS_REPEAT | LCCONFIG::BROADCAST_REPEAT | LCCONFIG::GROUP_IACK_ROUT | LCCONFIG::PHYS_IACK_NORMAL; // default value from spec. in case prop is not availible.
@@ -310,7 +369,11 @@ void NetworkLayerCoupler::sendMsgHopCount(AckType ack, AddressType addrType, uin
         }
         else if (npdu.hopCount() == 7)
         {
-            // ROUTE_UNMODIFIED
+            // AN189: group traffic cannot use the unlimited-routing value to
+            // traverse proxy boundaries indefinitely. Individual/broadcast
+            // commissioning retains its unlimited-routing transport semantics.
+            if (addrType == GroupAddress && destination != 0)
+                npdu.hopCount(6);
         }
     }
 
@@ -332,6 +395,21 @@ void NetworkLayerCoupler::sendMsgHopCount(AckType ack, AddressType addrType, uin
        (addrType == AddressType::GroupAddress && destination == 0 && !(lcconfig & LCCONFIG::BROADCAST_REPEAT)))
         doNotRepeat = true;
     
+#ifdef USE_DATASECURE
+    if (_secureProxy && addrType == GroupAddress && destination != 0)
+    {
+        CemiFrame translated(1);
+        const SecureProxyResult result = _secureProxy->translate(npdu.frame(), translated,
+                                       sourceInterfaceIndex, _deviceObj.individualAddress());
+        if (result == SecureProxyResult::Drop) return;
+        if (result == SecureProxyResult::Translated)
+        {
+            _netLayerEntities[interfaceIndex].sendDataRequest(translated.npdu(), ack, destination,
+                _deviceObj.individualAddress(), priority, addrType, broadcastType, doNotRepeat);
+            return;
+        }
+    }
+#endif
     _netLayerEntities[interfaceIndex].sendDataRequest(npdu, ack, destination, source, priority, addrType, broadcastType, doNotRepeat);
 }
 

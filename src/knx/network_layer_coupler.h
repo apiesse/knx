@@ -6,6 +6,7 @@
 #include "transport_layer.h"
 #include "network_layer_entity.h"
 #include "network_layer.h"
+#include "secure_proxy.h"
 
 class DeviceObject;
 class RouterObject;
@@ -27,6 +28,10 @@ class NetworkLayerCoupler : public NetworkLayer
     void rtObjPrimary(RouterObject& rtObjPrimary); // Coupler model 2.0
     void rtObjSecondary(RouterObject& rtObjSecondary); // Coupler model 2.0
     void rtObj(RouterObject& rtObj); // Coupler model 1.x
+#ifdef USE_DATASECURE
+    void secureProxy(SecureProxy& proxy) { _secureProxy = &proxy; }
+    void securityProxyDecoder(SecureProxyDecoder decoder) { _proxyDecoder = decoder; }
+#endif
 
     // from transport layer
     void dataIndividualRequest(AckType ack, uint16_t destination, HopCountType hopType, Priority priority, TPDU& tpdu) override;
@@ -74,6 +79,12 @@ class NetworkLayerCoupler : public NetworkLayer
 
     RouterObject* _rtObjPrimary {nullptr};
     RouterObject* _rtObjSecondary {nullptr};
+#ifdef USE_DATASECURE
+    SecureProxy* _secureProxy = nullptr;
+    SecureProxyDecoder _proxyDecoder = nullptr;
+    bool refreshSecureProxy();
+    bool _proxyTableActive = false;
+#endif
 
     CouplerType _couplerType;
     uint16_t _currentAddress;

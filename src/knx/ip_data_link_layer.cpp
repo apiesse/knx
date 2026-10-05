@@ -30,7 +30,7 @@ bool validKnxIpDatagram(const uint8_t* buffer, uint16_t length)
            getWord(buffer + 4) == length;
 }
 
-bool validSearchHpai(const uint8_t* buffer, uint16_t length, uint32_t remoteAddr)
+bool validSearchHpai(const uint8_t* buffer, uint16_t length, uint32_t remoteAddr, bool tcp = false)
 {
     if (buffer == nullptr || length < KNXIP_HEADER_LEN + LEN_IPHPAI)
         return false;
@@ -38,8 +38,9 @@ bool validSearchHpai(const uint8_t* buffer, uint16_t length, uint32_t remoteAddr
     const uint16_t hpaiOffset = KNXIP_HEADER_LEN;
     const uint32_t claimedAddress = getInt(buffer + hpaiOffset + 2);
     return buffer[hpaiOffset] == LEN_IPHPAI &&
-           buffer[hpaiOffset + 1] == (uint8_t)IPV4_UDP &&
-           (claimedAddress == 0 || claimedAddress == remoteAddr);
+           buffer[hpaiOffset + 1] == (uint8_t)(tcp ? IPV4_TCP : IPV4_UDP) &&
+           (claimedAddress == 0 || claimedAddress == remoteAddr) &&
+           (!tcp || (claimedAddress == 0 && getWord(buffer + hpaiOffset + 6) == 0));
 }
 }
 
@@ -55,6 +56,9 @@ IpDataLinkLayer::IpDataLinkLayer(DeviceObject& devObj, IpParameterObject& ipPara
 #endif
                                 ),
                                  _ipParameters(ipParam),
+#ifdef USE_IPSECURE
+                                 _secureRouting(platform, ipParam),
+#endif
                                  _dllcb(dllcb)
 {
 }
@@ -92,6 +96,10 @@ void IpDataLinkLayer::loop()
     if (!_enabled)
         return;
 
+#ifdef USE_IPSECURE
+    updateMulticast();
+    _secureRouting.loop();
+#endif
 
     uint8_t buffer[512];
     uint16_t remotePort = 0;
@@ -102,6 +110,18 @@ void IpDataLinkLayer::loop()
 
     if (!validKnxIpDatagram(buffer, (uint16_t)len))
         return;
+
+#ifdef USE_IPSECURE
+    const uint16_t outerService = getWord(buffer + 2);
+    if (outerService == KnxIpSecure::TimerNotify ||
+        (outerService == KnxIpSecure::Wrapper && len >= 44 && getWord(buffer + 6) == 0))
+    {
+        if (!_secureRouting.required()) return;
+        len = _secureRouting.receive(buffer, len);
+        if (!len) return;
+    }
+    else if (outerService >= 0x0530 && outerService <= 0x0533 && _secureRouting.required()) return;
+#endif
 
 #ifdef KNX_ACTIVITYCALLBACK
     if(_dllcb)
@@ -128,30 +148,12 @@ void IpDataLinkLayer::loop()
         
         case SearchRequest:
         {
-            if (len != KNXIP_HEADER_LEN + LEN_IPHPAI ||
-                !validSearchHpai(buffer, (uint16_t)len, remoteAddr))
-                break;
-
-            KnxIpSearchRequest searchRequest(buffer, len);
-            KnxIpSearchResponse searchResponse(_ipParameters, _deviceObject);
-
-            auto hpai = searchRequest.hpai();
-            const uint16_t responsePort = hpai.ipPortNumber() ? hpai.ipPortNumber() : remotePort;
-#ifdef KNX_ACTIVITYCALLBACK
-            if(_dllcb)
-                _dllcb->activity((_netIndex << KNX_ACTIVITYCALLBACK_NET) | (KNX_ACTIVITYCALLBACK_DIR_SEND << KNX_ACTIVITYCALLBACK_DIR) | (KNX_ACTIVITYCALLBACK_IPUNICAST));
-#endif
-            _platform.sendBytesUniCast(remoteAddr, responsePort, searchResponse.data(), searchResponse.totalLength());
+            handleSearchRequest(buffer, len, remoteAddr, remotePort);
             break;
         }
         case SearchRequestExt:
         {
-            #if KNX_SERVICE_FAMILY_CORE >= 2
-            if (len < KNXIP_HEADER_LEN + LEN_IPHPAI ||
-                !validSearchHpai(buffer, (uint16_t)len, remoteAddr))
-                break;
-            loopHandleSearchRequestExtended(buffer, len, remoteAddr, remotePort);
-            #endif
+            handleSearchRequest(buffer, len, remoteAddr, remotePort);
             break;
         }
         default:
@@ -169,9 +171,46 @@ void IpDataLinkLayer::loop()
     }
 }
 
+void IpDataLinkLayer::handleSearchRequest(uint8_t* buffer, uint16_t length,
+                                          uint32_t remoteAddr, uint16_t remotePort, bool tcp)
+{
+    if (!validKnxIpDatagram(buffer, length) || !validSearchHpai(buffer, length, remoteAddr, tcp)) return;
+    if (getWord(buffer + 2) == SearchRequest)
+    {
+        if (tcp) return; // Legacy search is discovery-endpoint UDP only.
+        if (length != KNXIP_HEADER_LEN + LEN_IPHPAI) return;
+        KnxIpSearchRequest searchRequest(buffer, length);
+        KnxIpSearchResponse searchResponse(_ipParameters, _deviceObject);
+        if (tcp)
+        {
+            searchResponse.controlEndpoint().code(IPV4_TCP);
+            searchResponse.controlEndpoint().ipAddress(0);
+            searchResponse.controlEndpoint().ipPortNumber(0);
+        }
+        const uint16_t responsePort = searchRequest.hpai().ipPortNumber() ? searchRequest.hpai().ipPortNumber() : remotePort;
+        sendSearchResponse(remoteAddr, responsePort, searchResponse.data(), searchResponse.totalLength());
+    }
+#if KNX_SERVICE_FAMILY_CORE >= 2
+    else if (getWord(buffer + 2) == SearchRequestExt)
+        loopHandleSearchRequestExtended(buffer, length, remoteAddr, remotePort, tcp);
+#endif
+}
+
+void IpDataLinkLayer::sendSearchResponse(uint32_t address, uint16_t port, uint8_t* packet, uint16_t length)
+{
+#ifdef KNX_ACTIVITYCALLBACK
+    if (_dllcb) _dllcb->activity((_netIndex << KNX_ACTIVITYCALLBACK_NET) | (KNX_ACTIVITYCALLBACK_DIR_SEND << KNX_ACTIVITYCALLBACK_DIR) | KNX_ACTIVITYCALLBACK_IPUNICAST);
+#endif
+#ifdef KNX_TUNNELING
+    _ipTunnelServer.sendDiscoveryResponse(address, port, packet, length);
+#else
+    _platform.sendBytesUniCast(address, port, packet, length);
+#endif
+}
+
 #if KNX_SERVICE_FAMILY_CORE >= 2
 void IpDataLinkLayer::loopHandleSearchRequestExtended(uint8_t* buffer, uint16_t length,
-                                                      uint32_t remoteAddr, uint16_t remotePort)
+                                                      uint32_t remoteAddr, uint16_t remotePort, bool tcp)
 {
     KnxIpSearchRequestExtended searchRequest(buffer, length);
     if (!searchRequest.valid())
@@ -197,23 +236,13 @@ void IpDataLinkLayer::loopHandleSearchRequestExtended(uint8_t* buffer, uint16_t 
                 return;
     }
 
-    #define LEN_SERVICE_FAMILIES 2
-    #if MASK_VERSION == 0x091A
-    #ifdef KNX_TUNNELING
-    #define LEN_SERVICE_DIB (2 + 4 * LEN_SERVICE_FAMILIES)
-    #else
-    #define LEN_SERVICE_DIB (2 + 3 * LEN_SERVICE_FAMILIES)
-    #endif
-    #else
-    #ifdef KNX_TUNNELING
-    #define LEN_SERVICE_DIB (2 + 3 * LEN_SERVICE_FAMILIES)
-    #else
-    #define LEN_SERVICE_DIB (2 + 2 * LEN_SERVICE_FAMILIES)
-    #endif
-    #endif
+#define LEN_SERVICE_DIB KNX_IP_EXT_SERVICE_DIB_LENGTH
 
     //defaults: "Device Information DIB", "Extended Device Information DIB" and "Supported Services DIB".
     uint32_t dibLength = LEN_DEVICE_INFORMATION_DIB + LEN_SERVICE_DIB + LEN_EXTENDED_DEVICE_INFORMATION_DIB;
+#ifdef USE_IPSECURE
+    dibLength += _ipParameters.securedServiceDibLength();
+#endif
 
     if(searchRequest.srpByService)
     {
@@ -238,6 +267,13 @@ void IpDataLinkLayer::loopHandleSearchRequestExtended(uint8_t* buffer, uint16_t 
                 case Routing:
                     if(version > KNX_SERVICE_FAMILY_ROUTING) return;
                     break;
+#ifdef USE_IPSECURE
+                case Security:
+                    if(version > 1) return;
+                    break;
+#endif
+                default:
+                    return; // An unsupported family cannot satisfy this SRP.
             }
         }
     }
@@ -277,7 +313,10 @@ void IpDataLinkLayer::loopHandleSearchRequestExtended(uint8_t* buffer, uint16_t 
 #endif
     }
 
-    static const uint32_t maxDibLength = 500U - LEN_KNXIP_HEADER - LEN_IPHPAI;
+    uint32_t maxDibLength = 500U - LEN_KNXIP_HEADER - LEN_IPHPAI;
+#ifdef KNX_TUNNELING
+    maxDibLength = _ipTunnelServer.discoveryResponseLimit() - LEN_KNXIP_HEADER - LEN_IPHPAI;
+#endif
     if (dibLength > maxDibLength)
     {
         printf("skipped response DIB length > %lu. Length: %lu bytes\n",
@@ -286,10 +325,19 @@ void IpDataLinkLayer::loopHandleSearchRequestExtended(uint8_t* buffer, uint16_t 
     }
 
     KnxIpSearchResponseExtended searchResponse(_ipParameters, _deviceObject, (int)dibLength);
+    if (tcp)
+    {
+        searchResponse.controlEndpoint().code(IPV4_TCP);
+        searchResponse.controlEndpoint().ipAddress(0);
+        searchResponse.controlEndpoint().ipPortNumber(0);
+    }
 
     searchResponse.setDeviceInfo(_ipParameters, _deviceObject); //DescriptionTypeCode::DeviceInfo 1
     searchResponse.setSupportedServices(); //DescriptionTypeCode::SUPP_SVC_FAMILIES 2
     searchResponse.setExtendedDeviceInfo(); //DescriptionTypeCode::EXTENDED_DEVICE_INFO 8
+#ifdef USE_IPSECURE
+    searchResponse.setSecuredServices(_ipParameters);
+#endif
 
     if(searchRequest.srpRequestDIBs)
     {
@@ -310,7 +358,7 @@ void IpDataLinkLayer::loopHandleSearchRequestExtended(uint8_t* buffer, uint16_t 
 #ifdef KNX_TUNNELING
         if(searchRequest.requestedDIB(TUNNELING_INFO))
             searchResponse.setTunnelingInfo(_ipParameters, _deviceObject,
-                                            _ipTunnelServer.tunnelConnections());
+                                            _ipTunnelServer.tunnelConnections(), _ipTunnelServer.discoveryUser());
 #endif
     }
 
@@ -322,8 +370,7 @@ void IpDataLinkLayer::loopHandleSearchRequestExtended(uint8_t* buffer, uint16_t 
 
     const uint16_t responsePort = searchRequest.hpai().ipPortNumber() ?
                                       searchRequest.hpai().ipPortNumber() : remotePort;
-    _platform.sendBytesUniCast(remoteAddr, responsePort,
-                               searchResponse.data(), searchResponse.totalLength());
+    sendSearchResponse(remoteAddr, responsePort, searchResponse.data(), searchResponse.totalLength());
 }
 #endif
 
@@ -335,14 +382,35 @@ void IpDataLinkLayer::enabled(bool value)
 //    _println(_deviceObject.individualAddress());
     if (value && !_enabled)
     {
+#ifdef KNX_TUNNELING
+        // Register only after the BAU has constructed all of its members.
+        // In Bau091A the data-link layer precedes the tunnel server.
+        _ipTunnelServer.discoveryHandler(this);
+#endif
         _platform.setupMultiCast(_ipParameters.propertyValue<uint32_t>(PID_ROUTING_MULTICAST_ADDRESS), KNXIP_MULTICAST_PORT);
+#ifdef USE_IPSECURE
+        _multicastAddress = _ipParameters.propertyValue<uint32_t>(PID_ROUTING_MULTICAST_ADDRESS);
+        _secureRouting.enabled(true);
+#endif
+#if defined(KNX_TUNNELING) && defined(USE_IPSECURE)
+        _ipTunnelServer.secureEnabled(true);
+#endif
         _enabled = true;
         return;
     }
 
     if(!value && _enabled)
     {
+#ifdef KNX_TUNNELING
+        _ipTunnelServer.discoveryHandler(nullptr);
+#endif
         _platform.closeMultiCast();
+#ifdef USE_IPSECURE
+        _secureRouting.enabled(false);
+#endif
+#if defined(KNX_TUNNELING) && defined(USE_IPSECURE)
+        _ipTunnelServer.secureEnabled(false);
+#endif
         _enabled = false;
         return;
     }
@@ -363,8 +431,24 @@ bool IpDataLinkLayer::sendBytes(uint8_t* bytes, uint16_t length)
     if (!_enabled)
         return false;
 
+#ifdef USE_IPSECURE
+    updateMulticast();
+    if (_secureRouting.required()) return _secureRouting.send(bytes, length);
+#endif
+
     return _platform.sendBytesMultiCast(bytes, length);
 }
+
+#ifdef USE_IPSECURE
+void IpDataLinkLayer::updateMulticast()
+{
+    const uint32_t address = _ipParameters.propertyValue<uint32_t>(PID_ROUTING_MULTICAST_ADDRESS);
+    if (address == _multicastAddress) return;
+    _platform.closeMultiCast();
+    _platform.setupMultiCast(address, KNXIP_MULTICAST_PORT);
+    _multicastAddress = address;
+}
+#endif
 
 bool IpDataLinkLayer::isSendLimitReached()
 {

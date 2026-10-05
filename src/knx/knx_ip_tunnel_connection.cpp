@@ -21,4 +21,7 @@ void KnxIpTunnelConnection::Reset()
     SequenceCounter_R = 255;
     IndividualAddress = 0;
     IsConfig = false;
+#ifdef USE_IPSECURE
+    SecureSessionId = 0;
+#endif
 }

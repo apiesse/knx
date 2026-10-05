@@ -59,8 +59,11 @@
 // KNX Data Secure Options
 // Define via a compiler -D flag if required
 // #define USE_DATASECURE
-// USE_DATASECURE additionally requires KNX_DATASECURE_FDSK_BYTES to expand to
-// exactly 16 comma-separated, device-unique bytes supplied by provisioning.
+// USE_DATASECURE requires a provisioned per-device runtime FDSK and durable
+// Platform security-state storage. It deliberately has no embedded default key.
+// USE_IPSECURE additionally requires cryptographic RNG, X25519/SHA256 and TCP
+// Platform hooks; all unsupported hooks fail closed.
+// #define USE_IPSECURE
 
 // option to have GroupObjects (KO in German) use 8 bytes mangement information RAM instead of 19 bytes
 // see knx-demo-small-go for example

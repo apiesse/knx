@@ -16,6 +16,9 @@ class KnxIpTunnelConnection
     uint8_t SequenceCounter_R = 255;
     unsigned long lastHeartbeat = 0;
     bool IsConfig = false;
+#ifdef USE_IPSECURE
+    uint16_t SecureSessionId = 0;
+#endif
 
     void Reset();
 

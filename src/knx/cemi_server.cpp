@@ -15,12 +15,7 @@ namespace
 {
 bool cemiManagementWriteAllowed(BauSystemB& bau)
 {
-#ifdef KNX_MANAGEMENT_ALLOW_UNGATED
-    (void)bau;
-    return true;
-#else
-    return bau.deviceObject().progMode();
-#endif
+    return bau.anonymousManagementWriteAllowed();
 }
 }
 
@@ -169,19 +164,26 @@ void CemiServer::frameReceived(CemiFrame& frame, uint8_t channelId)
 
         case M_FuncPropCommand_req:
         {
-            println("M_FuncPropCommand_req not implemented");  
+            handleMFunction(frame, channelId, true);
             break;
         }
 
         case M_FuncPropStateRead_req:
         {
-            println("M_FuncPropStateRead_req not implemented");  
+            handleMFunction(frame, channelId, false);
             break;
         }
 
         case M_Reset_req:
         {
             handleMReset(frame, channelId);
+            break;
+        }
+
+        case T_data_individual_req:
+        case T_data_connected_req:
+        {
+            handleTData(frame, channelId, frame.messageCode() == T_data_connected_req);
             break;
         }
 
@@ -197,6 +199,63 @@ void CemiServer::frameReceived(CemiFrame& frame, uint8_t channelId)
         default:
             break;
     }
+}
+
+void CemiServer::sendManagementFrame(CemiFrame& frame, uint8_t channelId)
+{
+#ifdef USE_USB
+    _usbTunnelInterface.sendCemiFrame(frame);
+#elif defined(KNX_TUNNELING)
+    _ipTunnelServer.dataRequestToChannelId(frame, channelId);
+#else
+    (void)frame; (void)channelId;
+#endif
+}
+
+void CemiServer::handleMFunction(CemiFrame& frame, uint8_t channelId, bool command)
+{
+    if (frame.dataLength() < 5 || frame.dataLength() - 5 > 255) return;
+    uint8_t bytes[MAX_CEMI_FRAME_SIZE] = {};
+    memcpy(bytes, frame.data(), 5); bytes[0] = M_FuncPropCommand_con;
+    uint8_t length = 255;
+    _bau.anonymousFunctionProperty(static_cast<ObjectType>(getWord(frame.data() + 1)),
+                                   frame.data()[3], frame.data()[4], command,
+                                   frame.data() + 5, frame.dataLength() - 5, bytes + 5, length);
+    CemiFrame response(bytes, 5 + length);
+    sendManagementFrame(response, channelId);
+}
+
+void CemiServer::handleTData(CemiFrame& frame, uint8_t channelId, bool connected)
+{
+#if defined(KNX_TUNNELING) && !defined(USE_USB)
+    if (!_ipTunnelServer.isConfigChannel(channelId)) return;
+#endif
+    const uint8_t* bytes = frame.data();
+    const uint16_t offset = 8 + bytes[1];
+    const uint8_t length = bytes[offset]; // validBuffer has checked all offsets.
+    if (!length || length > MAX_APDU_OCTET_COUNT) return;
+    CemiFrame local(length);
+    local.sourceAddress(0); local.destinationAddress(0);
+    local.addressType(IndividualAddress); local.systemBroadcast(Broadcast);
+    memcpy(local.apdu().data() - 1, bytes + offset + 1, length + 1);
+    struct Reply { CemiServer* server; uint8_t channel; bool connected; } reply{this, channelId, connected};
+    _bau.localManagementIndication(local.apdu(), connected,
+        [](void* context, APDU& response) {
+            auto& reply = *static_cast<Reply*>(context);
+            reply.server->sendLocalManagementResponse(response, reply.channel, reply.connected);
+        }, &reply);
+}
+
+void CemiServer::sendLocalManagementResponse(APDU& response, uint8_t channelId, bool connected)
+{
+    const uint16_t length = response.length();
+    if (!length || length > MAX_APDU_OCTET_COUNT || (response.data()[-1] & 0xfc)) return;
+    uint8_t bytes[MAX_CEMI_FRAME_SIZE] = {};
+    bytes[0] = connected ? T_data_connected_ind : T_data_individual_ind;
+    bytes[8] = length;
+    memcpy(bytes + 9, response.data() - 1, length + 1);
+    CemiFrame frame(bytes, length + 10);
+    if (CemiFrame::validBuffer(frame.data(), frame.dataLength())) sendManagementFrame(frame, channelId);
 }
 
 void CemiServer::handleLData(CemiFrame& frame)
@@ -317,9 +376,8 @@ void CemiServer::handleMPropRead(CemiFrame& frame, uint8_t channelId)
 
     if (data && dataSize && numberOfElements && dataSize <= MAX_CEMI_FRAME_SIZE - 7)
     {
-#ifdef KNX_LOG_TUNNELING
-        printHex(" <- data: ", data, dataSize);
-#endif
+        // Property payloads can contain commissioning secrets; log metadata
+        // only, never the returned or attempted key bytes.
 
         // Prepare positive response
         uint8_t responseData[7 + dataSize];
@@ -385,7 +443,8 @@ void CemiServer::handleMPropWrite(CemiFrame& frame, uint8_t channelId)
     print(" startIdx: ");
     print(startIndex, DEC);
 
-    printHex(" -> data: ", requestData, requestDataSize);
+    // Do not dump attempted writes: even a rejected key write may contain a
+    // real secret supplied by the commissioning tool.
 
     const bool addressByteWrite = ((ObjectType)objectType == OT_DEVICE) &&
                                   (numberOfElements == 1) &&

@@ -34,8 +34,6 @@ void Memory::readMemory()
         return;
     }
 
-    printHex("RESTORED ", flashStart, _metadataSize);
-
     uint16_t metadataBlockSize = alignToPageSize(_metadataSize);
 
     _freeList = new MemoryBlock(flashStart + metadataBlockSize, flashSize - metadataBlockSize);

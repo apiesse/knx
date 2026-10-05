@@ -5,6 +5,102 @@
 #include <cstring>
 #include <cstdlib>
 
+#ifdef __linux__
+#include <sys/random.h>
+#include <errno.h>
+#endif
+#ifdef KNX_SECURE_OPENSSL
+#include <openssl/evp.h>
+#include <openssl/rand.h>
+#endif
+
+bool Platform::fillRandom(uint8_t* buffer, size_t length)
+{
+    if (buffer == nullptr || length == 0)
+        return false;
+#ifdef KNX_SECURE_OPENSSL
+    return length <= INT32_MAX && RAND_bytes(buffer, static_cast<int>(length)) == 1;
+#elif defined(__linux__)
+    size_t done = 0;
+    while (done < length)
+    {
+        const ssize_t count = getrandom(buffer + done, length - done, 0);
+        if (count < 0 && errno == EINTR)
+            continue;
+        if (count <= 0)
+            return false;
+        done += static_cast<size_t>(count);
+    }
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool Platform::secureX25519(const uint8_t privateKey[32], const uint8_t peerPublic[32], uint8_t shared[32])
+{
+#ifdef KNX_SECURE_OPENSSL
+    if (!privateKey || !peerPublic || !shared)
+        return false;
+    EVP_PKEY* own = EVP_PKEY_new_raw_private_key(EVP_PKEY_X25519, nullptr, privateKey, 32);
+    EVP_PKEY* peer = EVP_PKEY_new_raw_public_key(EVP_PKEY_X25519, nullptr, peerPublic, 32);
+    EVP_PKEY_CTX* context = own ? EVP_PKEY_CTX_new(own, nullptr) : nullptr;
+    size_t size = 32;
+    const bool success = context && peer && EVP_PKEY_derive_init(context) == 1 &&
+                         EVP_PKEY_derive_set_peer(context, peer) == 1 &&
+                         EVP_PKEY_derive(context, shared, &size) == 1 && size == 32;
+    EVP_PKEY_CTX_free(context);
+    EVP_PKEY_free(peer);
+    EVP_PKEY_free(own);
+    if (!success)
+        memset(shared, 0, 32);
+    return success;
+#else
+    (void)privateKey; (void)peerPublic; (void)shared;
+    return false;
+#endif
+}
+
+bool Platform::secureSha256(const uint8_t* data, size_t length, uint8_t output[32])
+{
+#ifdef KNX_SECURE_OPENSSL
+    if (!output || (!data && length))
+        return false;
+    unsigned int size = 0;
+    return EVP_Digest(data, length, output, &size, EVP_sha256(), nullptr) == 1 && size == 32;
+#else
+    (void)data; (void)length; (void)output;
+    return false;
+#endif
+}
+
+bool Platform::readFactoryDeviceKey(uint8_t key[16])
+{
+    (void)key;
+    return false;
+}
+
+int Platform::readSecurityState(uint32_t recordId, uint8_t* data, size_t capacity)
+{
+    (void)recordId; (void)data; (void)capacity;
+    return -1;
+}
+
+bool Platform::writeSecurityState(uint32_t recordId, const uint8_t* data, size_t length)
+{
+    (void)recordId; (void)data; (void)length;
+    return false;
+}
+
+bool Platform::setupSecureTcp(uint16_t port) { (void)port; return false; }
+int Platform::acceptSecureTcp(uint32_t& address, uint16_t& port) { (void)address; (void)port; return -1; }
+int Platform::readSecureTcp(int connection, uint8_t* buffer, uint16_t capacity)
+{ (void)connection; (void)buffer; (void)capacity; return -1; }
+bool Platform::sendSecureTcp(int connection, uint8_t* buffer, uint16_t length)
+{ (void)connection; (void)buffer; (void)length; return false; }
+void Platform::closeSecureTcp(int connection) { (void)connection; }
+void Platform::closeSecureTcpListener() {}
+
 
 TPUart::Interface::Abstract* Platform::interface()
 {

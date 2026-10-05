@@ -29,5 +29,8 @@ class Bau57B0 : public BauSystemBDevice, public DataLinkLayerCallbacks
     CemiServer _cemiServer;
     CemiServerObject _cemiServerObject;
 #endif
+#ifdef KNX_TUNNELING
+    IpTunnelServer _ipTunnelServer;
+#endif
 };
 #endif

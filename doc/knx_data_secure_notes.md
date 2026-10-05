@@ -1,25 +1,44 @@
-KNX Data Secure
-===============
+# KNX Secure implementation notes
 
-Implementation Notes
---------------------
-* Implementation based on application note AN158 v07 KNX Data Security 
-* AES-128 is implemented in software, no hardware acceleration used currently
-* Secure device setup with ETS-5.7.x tested and working
-* Secure group communication needs more testing
-* Support for FDSK generation
-* Support for P2P mode prepared
-* No support for LTE-mode[T_Data_Tag_Group] (zone key table is already there) currently
-* No support roles (and no plan to implement this in the near future)
+The current branch implements Data Secure Auth/AuthConf, full-address key
+lookup, bounded parsing, randomized sync exchanges, authenticated replay state,
+durable outgoing reservations and per-device runtime FDSK provisioning. Secure
+tool management does not need the physical programming switch; anonymous cEMI
+v1 remains anonymous even inside an authenticated IP session. Plain group objects
+remain usable in the same Secure-capable application, according to ETS policy.
 
-ToDo:
------
-* Add support for AN192 v04 Coupler security extensions (a.k.a. Secure Proxy which translates between unsecured and secured devices)
-* Handle S-A_Sync Service when initially the last valid sequence nummer is not known during runtime, i.e. group communication
-* handle MasterReset according to spec. for security interface object
+Platform integrations must provide `readFactoryDeviceKey`, cryptographic
+`fillRandom`, and durable `readSecurityState`/`writeSecurityState` hooks.
+Defaults fail closed. ESP-IDF uses manufacturing NVS, early hardware entropy,
+CTR-DRBG, SHA256 and X25519; host tests use the OpenSSL backend. No common FDSK
+is compiled into the library. Do not erase or roll back journals while reusing
+keys, including on factory reset. Shared/default device serials are unsuitable
+for production; IP Secure refuses the old demonstration serial.
 
-Development environment
------------------------
-* see linux example on how to generate the FDSK string which needs to be entered in the ETS
-* use BAU57B0, but fake the mask by setting _deviceObj.maskVersion(0x07B0). This "emulates" a TP1 device which is reachable over an IP router
-* To generate a KNX ETS product database with support for KNX Data Secure, use the latest version of the CreateKnxProd tool which supports schema version 20.
+IP Secure is integrated in the IP data link/tunnel server, including UDP/TCP
+sessions, discovery, tunnel ACLs and durable multicast routing. It does not
+advertise Secure local Device Management v2: local Secure transport APDUs are
+rejected until the normative nonce/direction mapping is verified. Proxy group
+translation and local temporary leases are integrated in the coupler routing
+path, but the normative AN192 provisioning/temporary commands remain missing;
+see [Secure Proxy qualification boundary](secure_proxy.md).
+
+LTE/zone-addressing and the complete P2P role model are not implemented.
+Historical PID_ZONE_KEY_TABLE/PID_ROLE_TABLE placeholders do not constitute
+support. P2P key lookup and Tool authentication must not be confused with those
+profiles. No complete KNX Secure or certification claim is made.
+
+Current evidence is the host runtime suites (`test/CMakeLists.txt`), independent
+vectors (`test/secure_vectors.py`), source contracts and native ESP-IDF syntax
+checks (`test/espidf_secure_syntax.ps1`). They do not establish interoperability
+with ETS5/ETS6 or a physical bus. The old AN158-based note asserting tested ETS
+setup is not evidence for this rewritten implementation.
+
+The RoomUnit integration uses one application6, KNX XML20, targeting ETS5.7+ and
+ETS6. It advertises only the TP device's Data Secure capacity, not Proxy or IP
+capabilities. A signed product database, XSD validation, actual Secure/plain
+downloads and hardware qualification are still required.
+
+References: [KNX Data Secure](https://support.knx.org/hc/en-us/articles/360012689639-KNX-Data-Secure),
+[XKNX current Data Secure primitives](https://github.com/XKNX/xknx/blob/main/xknx/secure/data_secure_asdu.py),
+[Calimero KNXnet/IP Secure](https://github.com/calimero-project/calimero-core/blob/master/src/io/calimero/knxnetip/SecureConnection.java).

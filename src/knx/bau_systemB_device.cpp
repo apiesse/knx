@@ -18,6 +18,7 @@ BauSystemBDevice::BauSystemBDevice(Platform& platform) :
     _appLayer.associationTableObject(_assocTable);
 #ifdef USE_DATASECURE
     _appLayer.groupAddressTable(_addrTable);
+    _secIfObj.bindPlatform(platform);
 #endif
     _transLayer.networkLayer(_netLayer);
     _transLayer.groupAddressTable(_addrTable);
@@ -214,7 +215,7 @@ void BauSystemBDevice::groupValueReadIndication(uint16_t asap, Priority priority
     // Get security flags from Security Interface Object for this group object
     requiredGoSecurity = _secIfObj.getGroupObjectSecurity(asap);
 
-    if (secCtrl.dataSecurity != requiredGoSecurity)
+    if (secCtrl.toolAccess || secCtrl.dataSecurity != requiredGoSecurity)
     {
         println("GroupValueRead: access denied due to wrong security flags");
         return;
@@ -235,6 +236,10 @@ void BauSystemBDevice::groupValueReadAppLayerConfirm(uint16_t asap, Priority pri
     uint8_t dataLength)
 {
     if (asap == 0 || asap > _groupObjTable.entryCount()) return;
+#ifdef USE_DATASECURE
+    if (secCtrl.toolAccess || secCtrl.dataSecurity != _secIfObj.getGroupObjectSecurity(asap))
+        return;
+#endif
     GroupObject& go = _groupObjTable.get(asap);
 
     if (!go.communicationEnable() || !go.responseUpdateEnable())
@@ -251,7 +256,7 @@ void BauSystemBDevice::groupValueWriteIndication(uint16_t asap, Priority priorit
     // Get security flags from Security Interface Object for this group object
     requiredGoSecurity = _secIfObj.getGroupObjectSecurity(asap);
 
-    if (secCtrl.dataSecurity != requiredGoSecurity)
+    if (secCtrl.toolAccess || secCtrl.dataSecurity != requiredGoSecurity)
     {
         println("GroupValueWrite: access denied due to wrong security flags");
         return;

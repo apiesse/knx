@@ -3,6 +3,12 @@
 
 #include <cstring>
 
+static void wipePropertyData(uint8_t* data, size_t size)
+{
+    volatile uint8_t* bytes = data;
+    while (size--) *bytes++ = 0;
+}
+
 uint8_t DataProperty::read(uint16_t start, uint8_t count, uint8_t* data) const
 {
     if (start == 0)
@@ -34,12 +40,13 @@ uint8_t DataProperty::write(uint16_t start, uint8_t count, const uint8_t* data)
         if (count == 1 && data[0] == 0 && data[1] == 0)
         {
             // reset _data
-            _currentElements = 0;
             if (_data)
             {
+                wipePropertyData(_data, _currentElements * ElementSize());
                 delete[] _data;
                 _data = nullptr;
             }
+            _currentElements = 0;
             return 1;
         }
         else
@@ -61,6 +68,7 @@ uint8_t DataProperty::write(uint16_t start, uint8_t count, const uint8_t* data)
         if (oldData != nullptr)
         {
             memcpy(_data, oldData, oldDataSize);
+            wipePropertyData(oldData, oldDataSize);
             delete[] oldData;
         }
 
@@ -80,7 +88,10 @@ DataProperty::DataProperty(PropertyID id, bool writeEnable, PropertyDataType typ
 DataProperty::~DataProperty()
 {
     if (_data)
+    {
+        wipePropertyData(_data, _currentElements * ElementSize());
         delete[] _data;
+    }
 }
 
 DataProperty::DataProperty(PropertyID id, bool writeEnable, PropertyDataType type,
@@ -125,7 +136,10 @@ const uint8_t* DataProperty::restore(const uint8_t* buffer)
     if (elements != _currentElements)
     {
         if (_data != nullptr)
+        {
+            wipePropertyData(_data, _currentElements * ElementSize());
             delete[] _data;
+        }
         
         _data = new uint8_t[elements * ElementSize()];
         _currentElements = elements;

@@ -47,6 +47,19 @@ class Platform
     // unique serial number
     virtual uint32_t uniqueSerialNumber();
 
+    // Cryptographic services fail closed unless the platform supplies them.
+    virtual bool fillRandom(uint8_t* buffer, size_t length);
+    virtual bool secureX25519(const uint8_t privateKey[32], const uint8_t peerPublic[32], uint8_t shared[32]);
+    virtual bool secureSha256(const uint8_t* data, size_t length, uint8_t output[32]);
+    virtual bool readFactoryDeviceKey(uint8_t key[16]);
+
+    // Independent security journal, never the delayed/void EEPROM commit API.
+    // Read: exact byte count, 0 = absent, -1 = unavailable/corrupt/error.
+    // Write succeeds only after an atomic replacement is durable across power loss.
+    // Products must preserve these records during ordinary resets and upgrades.
+    virtual int readSecurityState(uint32_t recordId, uint8_t* data, size_t capacity);
+    virtual bool writeSecurityState(uint32_t recordId, const uint8_t* data, size_t length);
+
     // basic stuff
     virtual void restart() = 0;
     virtual void fatalError() = 0;
@@ -60,6 +73,15 @@ class Platform
 
     //unicast socket
     virtual bool sendBytesUniCast(uint32_t addr, uint16_t port, uint8_t* buffer, uint16_t len);
+
+    // Nonblocking TCP transport for KNX IP Secure sessions. Connection ids >= 0.
+    // Read returns 0 for no data and -1 on closed/error. Partial send fails closed.
+    virtual bool setupSecureTcp(uint16_t port);
+    virtual int acceptSecureTcp(uint32_t& peerAddress, uint16_t& peerPort);
+    virtual int readSecureTcp(int connection, uint8_t* buffer, uint16_t capacity);
+    virtual bool sendSecureTcp(int connection, uint8_t* buffer, uint16_t length);
+    virtual void closeSecureTcp(int connection);
+    virtual void closeSecureTcpListener();
 
     // SPI
     virtual void setupSpi();

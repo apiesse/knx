@@ -4,6 +4,7 @@
 
 #include "table_object.h"
 #include "knx_types.h"
+#include "secure_proxy.h"
 
 class Memory;
 
@@ -33,8 +34,15 @@ public:
 
   bool isRfSbcRoutingEnabled();
   bool isIpSbcRoutingEnabled();
+#ifdef USE_DATASECURE
+  uint16_t secureProxyEntryCount();
+  bool readSecureProxyRule(SecureProxyDecoder decoder, uint16_t index, SecureProxyRule& rule);
+  bool readSecureProxyRules(SecureProxyDecoder decoder, SecureProxyRule* rules,
+                            uint16_t capacity, uint16_t& count);
+#endif
 
   const uint8_t* restore(const uint8_t* buffer) override;
+  void masterReset(EraseCode eraseCode, uint8_t channel) override;
 
 protected:
   void beforeStateChange(LoadState& newState) override;

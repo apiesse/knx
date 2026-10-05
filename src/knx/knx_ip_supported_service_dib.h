@@ -10,7 +10,8 @@ enum ServiceFamily : uint8_t
     Routing = 5,
     RemoteLogging = 6,
     RemoteConfigDiag = 7,
-    ObjectServer = 8
+    ObjectServer = 8,
+    Security = 9
 };
 
 class KnxIpSupportedServiceDIB : public KnxIpDIB

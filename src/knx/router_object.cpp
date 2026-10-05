@@ -111,6 +111,9 @@ void RouterObject::initialize(CouplerModel model, uint8_t objIndex, DptMedium me
     allPropertiesCount += useTable ? tablePropertiesCount : 0;
     allPropertiesCount += useTable && (model == CouplerModel::Model_20)  ? tableProperties20Count : 0;
     allPropertiesCount += ((mediumType == DptMedium::KNX_RF) || (mediumType == DptMedium::KNX_IP)) ? 1 : 0; // PID_RF_ENABLE_SBC and PID_IP_ENABLE_SBC
+#ifdef USE_DATASECURE
+    allPropertiesCount += 1;
+#endif
 
     Property* allProperties[allPropertiesCount];
 
@@ -172,16 +175,88 @@ void RouterObject::initialize(CouplerModel model, uint8_t objIndex, DptMedium me
                                     });
     }
 
+#ifdef USE_DATASECURE
+    // Keep standard records opaque: a product must supply a qualified AN192
+    // decoder before ETS proxy configuration can be used for routing.
+    allProperties[i++] = new DataProperty(PID_SECURITY_PROXY_GRP_KEY_TABLE, true,
+                                          PDT_GENERIC_19, SecureProxy::MaxRules,
+                                          ReadLv0 | WriteLv0);
+#endif
     if (useTable)
         TableObject::initializeProperties(sizeof(allProperties), allProperties);
     else
         InterfaceObject::initializeProperties(sizeof(allProperties), allProperties);
+
+    // The declarations above allocate all model variants; only the selected
+    // model's properties are adopted by the object.
+    if (model != CouplerModel::Model_1x)
+        for (Property* property : model1xProperties) delete property;
+    else
+        for (Property* property : model20Properties) delete property;
+    if (!useTable)
+        for (Property* property : tableProperties) delete property;
+    if (!useTable || model != CouplerModel::Model_20)
+        for (Property* property : tableProperties20) delete property;
 }
 
 const uint8_t* RouterObject::restore(const uint8_t* buffer)
 {
     return TableObject::restore(buffer);
 }
+
+void RouterObject::masterReset(EraseCode eraseCode, uint8_t channel)
+{
+    TableObject::masterReset(eraseCode, channel);
+#ifdef USE_DATASECURE
+    if (eraseCode != FactoryReset && eraseCode != FactoryResetWithoutIA)
+        return;
+
+    Property* proxyKeys = property(PID_SECURITY_PROXY_GRP_KEY_TABLE);
+    if (proxyKeys)
+    {
+        // Serialize the complete all-zero capacity on the following memory
+        // commit. Merely resetting the count would leave old key bytes in the
+        // persisted property's tail, including after a shorter ETS download.
+        const uint8_t zeroRecord[19] = {};
+        for (uint16_t index = 1; index <= proxyKeys->MaxElements(); ++index)
+            proxyKeys->write(index, 1, zeroRecord);
+    }
+#endif
+}
+
+#ifdef USE_DATASECURE
+uint16_t RouterObject::secureProxyEntryCount()
+{
+    uint8_t bytes[2] = {};
+    Property* table = property(PID_SECURITY_PROXY_GRP_KEY_TABLE);
+    return table && table->read(0, 1, bytes) == 1 ? getWord(bytes) : 0;
+}
+
+bool RouterObject::readSecureProxyRules(SecureProxyDecoder decoder, SecureProxyRule* rules,
+                                       uint16_t capacity, uint16_t& count)
+{
+    count = secureProxyEntryCount();
+    if (!count) return true;
+    if (loadState() != LS_LOADED || !decoder || !rules || count > capacity) return false;
+    for (uint16_t i = 0; i < count; ++i)
+    {
+        if (!readSecureProxyRule(decoder, i + 1, rules[i])) return false;
+    }
+    return true;
+}
+
+bool RouterObject::readSecureProxyRule(SecureProxyDecoder decoder, uint16_t index, SecureProxyRule& rule)
+{
+    if (!decoder || loadState() != LS_LOADED || !index || index > secureProxyEntryCount()) return false;
+    uint8_t record[19] = {};
+    Property* table = property(PID_SECURITY_PROXY_GRP_KEY_TABLE);
+    rule = SecureProxyRule{};
+    const bool decoded = table && table->read(index, 1, record) == 1 && decoder(record, rule);
+    volatile uint8_t* bytes = record;
+    for (size_t j = 0; j < sizeof(record); ++j) bytes[j] = 0;
+    return decoded;
+}
+#endif
 
 bool RouterObject::hasValidFilterTable()
 {

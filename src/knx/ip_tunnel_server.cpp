@@ -28,12 +28,13 @@ bool validKnxIpEnvelope(const uint8_t* buffer, uint16_t length)
            getWord(buffer + 4) == length;
 }
 
-bool validHpai(const uint8_t* buffer, uint16_t length, uint16_t offset)
+bool validHpai(const uint8_t* buffer, uint16_t length, uint16_t offset, bool tcp = false)
 {
     return buffer != nullptr && offset <= length &&
            length - offset >= LEN_IPHPAI &&
            buffer[offset] == LEN_IPHPAI &&
-           buffer[offset + 1] == (uint8_t)IPV4_UDP;
+           buffer[offset + 1] == (uint8_t)(tcp ? IPV4_TCP : IPV4_UDP) &&
+           (!tcp || (getInt(buffer + offset + 2) == 0 && getWord(buffer + offset + 6) == 0));
 }
 
 bool hpaiAddressMatchesSource(const uint8_t* buffer, uint16_t offset, uint32_t srcAddr)
@@ -69,6 +70,12 @@ bool validDeviceConfigurationCemi(const uint8_t* buffer, uint16_t length)
         case M_PropRead_req:
         case M_PropWrite_req:
         case M_Reset_req:
+        case M_FuncPropCommand_req:
+        case M_FuncPropStateRead_req:
+        case T_data_individual_req:
+        case T_data_connected_req:
+            // CemiServer preserves anonymous privilege for local management;
+            // its SAL rejects secure local TL until its nonce mapping is known.
             return true;
         default:
             return false;
@@ -88,8 +95,12 @@ bool endpointMatches(const KnxIpTunnelConnection* tunnel, uint32_t srcAddr, uint
 }
 }
 
-IpTunnelServer::IpTunnelServer(DeviceObject& devObj, IpParameterObject& ipParam, Platform& platform, CemiServer& cemiServer) : _deviceObject(devObj),
+IpTunnelServer::IpTunnelServer(DeviceObject& devObj, IpParameterObject& ipParam, Platform& platform, CemiServer& cemiServer) :
+#ifdef USE_IPSECURE
+                                                                                                                               _secureSessions(platform, ipParam, *this),
+#endif
                                                                                                                                _ipParameters(ipParam),
+                                                                                                                               _deviceObject(devObj),
                                                                                                                                _platform(platform),
                                                                                                                                _cemiServer(cemiServer)
 {
@@ -97,10 +108,22 @@ IpTunnelServer::IpTunnelServer(DeviceObject& devObj, IpParameterObject& ipParam,
 
 void IpTunnelServer::loop()
 {
+#ifdef USE_IPSECURE
+    _secureSessions.loop();
+#endif
     for (int i = 0; i < KNX_TUNNELING + KNX_TUNNELING_DEVMGMT; i++)
     {
         if (tunnels[i].ChannelId != 0)
         {
+#ifdef USE_IPSECURE
+            if (!channelAuthorized(tunnels[i]))
+            {
+                // Policy/ACL edits revoke existing channels, not only new
+                // CONNECT_REQUESTs. Never fall back to a plaintext close.
+                tunnels[i].Reset();
+                continue;
+            }
+#endif
             if (millis() - tunnels[i].lastHeartbeat > 120000)
             {
 #ifdef KNX_LOG_TUNNELING
@@ -114,7 +137,7 @@ void IpTunnelServer::loop()
                 discReq.hpaiCtrl().code(IPV4_UDP);
                 discReq.hpaiCtrl().ipAddress(tunnels[i].IpAddress);
                 discReq.hpaiCtrl().ipPortNumber(tunnels[i].PortCtrl);
-                _platform.sendBytesUniCast(tunnels[i].IpAddress, tunnels[i].PortCtrl, discReq.data(), discReq.totalLength());
+                sendToTunnel(tunnels[i], true, discReq.data(), discReq.totalLength());
                 tunnels[i].Reset();
             }
         }
@@ -316,14 +339,18 @@ void IpTunnelServer::sendFrameToTunnel(KnxIpTunnelConnection* tunnel, CemiFrame&
     println(tunnel->ChannelId, 16);
 #endif
     KnxIpTunnelingRequest req(frame);
-    req.connectionHeader().sequenceCounter(tunnel->SequenceCounter_S++);
+#ifdef USE_IPSECURE
+    if (_secureSessions.isTcp(tunnel->SecureSessionId)) req.connectionHeader().sequenceCounter(0);
+    else
+#endif
+        req.connectionHeader().sequenceCounter(tunnel->SequenceCounter_S++);
     req.connectionHeader().length(LEN_CH);
     req.connectionHeader().channelId(tunnel->ChannelId);
 
     if (frame.messageCode() != L_data_req && frame.messageCode() != L_data_con && frame.messageCode() != L_data_ind)
         req.serviceTypeIdentifier(DeviceConfigurationRequest);
 
-    _platform.sendBytesUniCast(tunnel->IpAddress, tunnel->PortData, req.data(), req.totalLength());
+    sendToTunnel(*tunnel, false, req.data(), req.totalLength());
 }
 
 bool IpTunnelServer::isTunnelAddress(uint16_t addr)
@@ -373,15 +400,42 @@ bool IpTunnelServer::HandleIpFrame(uint8_t* buffer, uint16_t length, uint32_t& s
     if (!validKnxIpEnvelope(buffer, length))
         return false;
 
+    bool tcp = false;
+#ifdef USE_IPSECURE
+    if (!_dispatchSession && _secureSessions.receive(buffer, length, src_addr, src_port)) return true;
+    tcp = _dispatchSession && _secureSessions.isTcp(_dispatchSession);
+    // Each connection-oriented packet is bound to the authenticated session,
+    // not merely to its IP endpoint or client-controlled channel identifier.
+    if (length >= 7)
+    {
+        const uint16_t service = getWord(buffer + 2);
+        if (service == TunnelingRequest || service == DeviceConfigurationRequest ||
+            service == TunnelingAck || service == DeviceConfigurationAck ||
+            service == ConnectionStateRequest || service == DisconnectRequest)
+            for (const auto& tunnel : tunnels)
+                if (tunnel.ChannelId == buffer[6] && tunnel.SecureSessionId != _dispatchSession) return true;
+    }
+#endif
+
     uint16_t code;
     popWord(code, buffer + 2);
     switch ((KnxIpServiceType)code)
     {
+        case SearchRequest:
+        case SearchRequestExt: {
+            if (length < LEN_KNXIP_HEADER + LEN_IPHPAI ||
+                ((KnxIpServiceType)code == SearchRequest && length != LEN_KNXIP_HEADER + LEN_IPHPAI) ||
+                !validHpai(buffer, length, LEN_KNXIP_HEADER, tcp) ||
+                !hpaiAddressMatchesSource(buffer, LEN_KNXIP_HEADER, src_addr))
+                break;
+            if (_discoveryHandler) _discoveryHandler->handleSearchRequest(buffer, length, src_addr, src_port, tcp);
+            break;
+        }
         case ConnectRequest: {
             const uint16_t criOffset = LEN_KNXIP_HEADER + 2 * LEN_IPHPAI;
             if (length < criOffset + 2 ||
-                !validHpai(buffer, length, LEN_KNXIP_HEADER) ||
-                !validHpai(buffer, length, LEN_KNXIP_HEADER + LEN_IPHPAI) ||
+                !validHpai(buffer, length, LEN_KNXIP_HEADER, tcp) ||
+                !validHpai(buffer, length, LEN_KNXIP_HEADER + LEN_IPHPAI, tcp) ||
                 !hpaiAddressMatchesSource(buffer, LEN_KNXIP_HEADER, src_addr) ||
                 !hpaiAddressMatchesSource(buffer, LEN_KNXIP_HEADER + LEN_IPHPAI, src_addr))
                 break;
@@ -389,7 +443,7 @@ bool IpTunnelServer::HandleIpFrame(uint8_t* buffer, uint16_t length, uint32_t& s
             const uint8_t criLength = buffer[criOffset];
             const ConnectionType connectionType = (ConnectionType)buffer[criOffset + 1];
             const bool knownLengthValid =
-                (connectionType == TUNNEL_CONNECTION && criLength == LEN_CRI) ||
+                (connectionType == TUNNEL_CONNECTION && (criLength == LEN_CRI || criLength == 6)) ||
                 (connectionType == DEVICE_MGMT_CONNECTION && criLength == 2);
             const bool unknownType = connectionType != TUNNEL_CONNECTION &&
                                      connectionType != DEVICE_MGMT_CONNECTION;
@@ -403,7 +457,7 @@ bool IpTunnelServer::HandleIpFrame(uint8_t* buffer, uint16_t length, uint32_t& s
 
         case ConnectionStateRequest: {
             if (length != LEN_KNXIP_HEADER + 2 + LEN_IPHPAI ||
-                !validHpai(buffer, length, LEN_KNXIP_HEADER + 2) ||
+                !validHpai(buffer, length, LEN_KNXIP_HEADER + 2, tcp) ||
                 !hpaiAddressMatchesSource(buffer, LEN_KNXIP_HEADER + 2, src_addr))
                 break;
             HandleConnectionStateRequest(buffer, length, src_addr, src_port);
@@ -412,7 +466,7 @@ bool IpTunnelServer::HandleIpFrame(uint8_t* buffer, uint16_t length, uint32_t& s
 
         case DisconnectRequest: {
             if (length != LEN_KNXIP_HEADER + 2 + LEN_IPHPAI ||
-                !validHpai(buffer, length, LEN_KNXIP_HEADER + 2) ||
+                !validHpai(buffer, length, LEN_KNXIP_HEADER + 2, tcp) ||
                 !hpaiAddressMatchesSource(buffer, LEN_KNXIP_HEADER + 2, src_addr))
                 break;
             HandleDisconnectRequest(buffer, length, src_addr, src_port);
@@ -421,7 +475,7 @@ bool IpTunnelServer::HandleIpFrame(uint8_t* buffer, uint16_t length, uint32_t& s
 
         case DescriptionRequest: {
             if (length != LEN_KNXIP_HEADER + LEN_IPHPAI ||
-                !validHpai(buffer, length, LEN_KNXIP_HEADER) ||
+                !validHpai(buffer, length, LEN_KNXIP_HEADER, tcp) ||
                 !hpaiAddressMatchesSource(buffer, LEN_KNXIP_HEADER, src_addr))
                 break;
             HandleDescriptionRequest(buffer, length, src_addr, src_port);
@@ -467,6 +521,18 @@ void IpTunnelServer::HandleConnectRequest(uint8_t* buffer, uint16_t length, uint
     KnxIpConnectRequest connRequest(buffer, length);
     const uint16_t responsePort = connRequest.hpaiCtrl().ipPortNumber() ?
                                       connRequest.hpaiCtrl().ipPortNumber() : src_port;
+#ifdef USE_IPSECURE
+    const uint16_t family = connRequest.cri().type() == DEVICE_MGMT_CONNECTION ? 3 : 4;
+    const bool required = _ipParameters.secureServiceFamilies() & (1U << family);
+    const uint16_t user = _secureSessions.user(_dispatchSession);
+    if ((required && !_dispatchSession) || (_dispatchSession &&
+        ((required && connRequest.cri().type() == DEVICE_MGMT_CONNECTION && user != 1) ||
+         (required && connRequest.cri().type() == TUNNEL_CONNECTION && !_ipParameters.tunnelingUser(user)))))
+    {
+        KnxIpConnectResponse response(0, E_AUTHORISATION_ERROR);
+        sendUnicast(src_addr, responsePort, response.data(), response.totalLength()); return;
+    }
+#endif
 #ifdef KNX_LOG_TUNNELING
     println("Got Connect Request!");
     switch (connRequest.cri().type())
@@ -519,7 +585,7 @@ void IpTunnelServer::HandleConnectRequest(uint8_t* buffer, uint16_t length, uint
         println("Only Tunnel/DeviceMgmt Connection ist supported!");
 #endif
         KnxIpConnectResponse connRes(0x00, E_CONNECTION_TYPE);
-        _platform.sendBytesUniCast(src_addr, responsePort, connRes.data(), connRes.totalLength());
+        sendUnicast(src_addr, responsePort, connRes.data(), connRes.totalLength());
         return;
     }
 
@@ -530,7 +596,7 @@ void IpTunnelServer::HandleConnectRequest(uint8_t* buffer, uint16_t length, uint
         println("Only LinkLayer ist supported!");
 #endif
         KnxIpConnectResponse connRes(0x00, E_TUNNELING_LAYER);
-        _platform.sendBytesUniCast(src_addr, responsePort, connRes.data(), connRes.totalLength());
+        sendUnicast(src_addr, responsePort, connRes.data(), connRes.totalLength());
         return;
     }
 
@@ -600,8 +666,8 @@ void IpTunnelServer::HandleConnectRequest(uint8_t* buffer, uint16_t length, uint
                 break;
             }
         }
-        if (tunIdx == 0xff) 
-            ; // Todo? tunIdx = 0xff => tun = null => E_NO_MORE_CONNECTIONS
+        // No free management slot leaves tunIdx at 0xff; the common response
+        // path below reports E_NO_MORE_CONNECTIONS.
     }
     else if (connRequest.cri().type() == TUNNEL_CONNECTION) //
     {
@@ -613,6 +679,9 @@ void IpTunnelServer::HandleConnectRequest(uint8_t* buffer, uint16_t length, uint
         uint8_t tunnelResOptions[KNX_TUNNELING];
         for (int i = 0; i < KNX_TUNNELING; i++)
         {
+#ifdef USE_IPSECURE
+            if (required && _dispatchSession && !_ipParameters.tunnelingUser(user, i + 1)) continue;
+#endif
             if (resTunActive)
             {
                 tunnelResActive[i] = *(tunCtrlBytes + i) & 0x80;
@@ -670,7 +739,7 @@ void IpTunnelServer::HandleConnectRequest(uint8_t* buffer, uint16_t length, uint
             {
                 if (tunnelResOptions[firstResAndOccTunnel] == 1) // decline req
                 {
-                    ; // do nothing => decline
+                    // Leave tunIdx invalid to decline the request.
                 }
                 else if (tunnelResOptions[firstResAndOccTunnel] == 2) // close current tunnel connection on this tunnel and assign to this request
                 {
@@ -680,7 +749,7 @@ void IpTunnelServer::HandleConnectRequest(uint8_t* buffer, uint16_t length, uint
                     discReq.hpaiCtrl().code(IPV4_UDP);
                     discReq.hpaiCtrl().ipAddress(tunnels[firstResAndOccTunnel].IpAddress);
                     discReq.hpaiCtrl().ipPortNumber(tunnels[firstResAndOccTunnel].PortCtrl);
-                    _platform.sendBytesUniCast(tunnels[firstResAndOccTunnel].IpAddress, tunnels[firstResAndOccTunnel].PortCtrl, discReq.data(), discReq.totalLength());
+                    sendToTunnel(tunnels[firstResAndOccTunnel], true, discReq.data(), discReq.totalLength());
                     tunnels[firstResAndOccTunnel].Reset();
 
                     tunIdx = firstResAndOccTunnel;
@@ -689,8 +758,7 @@ void IpTunnelServer::HandleConnectRequest(uint8_t* buffer, uint16_t length, uint
                 {
                     if (firstFreeTunnel >= 0)
                         tunIdx = firstFreeTunnel;
-                    else
-                        ; // do nothing => decline
+                    // If all unreserved tunnels are occupied, decline.
                 }
                 // else
                 //  should not happen
@@ -710,6 +778,28 @@ void IpTunnelServer::HandleConnectRequest(uint8_t* buffer, uint16_t length, uint
     }
 
     KnxIpTunnelConnection* tun = nullptr;
+    // Extended CRI can request a particular tunnelling IA. Honor it only when
+    // available; never silently connect a caller to a different address.
+    if (connRequest.cri().type() == TUNNEL_CONNECTION && buffer[22] == 6)
+    {
+        const uint16_t requested = getWord(buffer + 26);
+        if (requested)
+        {
+            tunIdx = 0xff;
+            for (int i = 0; i < KNX_TUNNELING; ++i)
+                if (getWord(addresses + i * 2) == requested && !tunnels[i].ChannelId)
+                {
+#ifdef USE_IPSECURE
+                    if (required && _dispatchSession && !_ipParameters.tunnelingUser(user, i + 1))
+                    {
+                        KnxIpConnectResponse denied(0, E_AUTHORISATION_ERROR);
+                        sendUnicast(src_addr, responsePort, denied.data(), denied.totalLength()); return;
+                    }
+#endif
+                    tunIdx = i; break;
+                }
+        }
+    }
     if (tunIdx != 0xFF)
     {
         tun = &tunnels[tunIdx];
@@ -745,7 +835,7 @@ void IpTunnelServer::HandleConnectRequest(uint8_t* buffer, uint16_t length, uint
     {
         println("no free tunnel availible");
         KnxIpConnectResponse connRes(0x00, E_NO_MORE_CONNECTIONS);
-        _platform.sendBytesUniCast(src_addr, responsePort, connRes.data(), connRes.totalLength());
+        sendUnicast(src_addr, responsePort, connRes.data(), connRes.totalLength());
         return;
     }
 
@@ -768,6 +858,9 @@ void IpTunnelServer::HandleConnectRequest(uint8_t* buffer, uint16_t length, uint
     tun->IpAddress = srcIP;
     tun->PortData = connRequest.hpaiData().ipPortNumber() ? connRequest.hpaiData().ipPortNumber() : srcPort;
     tun->PortCtrl = connRequest.hpaiCtrl().ipPortNumber() ? connRequest.hpaiCtrl().ipPortNumber() : srcPort;
+#ifdef USE_IPSECURE
+    tun->SecureSessionId = _dispatchSession;
+#endif
 
     print("New Tunnel-Connection[");
     print(tunIdx);
@@ -803,8 +896,76 @@ void IpTunnelServer::HandleConnectRequest(uint8_t* buffer, uint16_t length, uint
     println();
 
     KnxIpConnectResponse connRes(_ipParameters, tun->IndividualAddress, 3671, tun->ChannelId, connRequest.cri().type());
-    _platform.sendBytesUniCast(tun->IpAddress, tun->PortCtrl, connRes.data(), connRes.totalLength());
+#ifdef USE_IPSECURE
+    if (_secureSessions.isTcp(_dispatchSession))
+    {
+        connRes.controlEndpoint().code(IPV4_TCP);
+        connRes.controlEndpoint().ipAddress(0); connRes.controlEndpoint().ipPortNumber(0);
+    }
+#endif
+    sendUnicast(tun->IpAddress, tun->PortCtrl, connRes.data(), connRes.totalLength());
 }
+
+bool IpTunnelServer::matchesEndpoint(const KnxIpTunnelConnection* tunnel, uint32_t address, uint16_t port, bool control) const
+{
+#ifdef USE_IPSECURE
+    if (tunnel && tunnel->SecureSessionId != _dispatchSession) return false;
+    if (tunnel && !channelAuthorized(*tunnel)) return false;
+#endif
+    return endpointMatches(tunnel, address, port, control);
+}
+bool IpTunnelServer::sendUnicast(uint32_t address, uint16_t port, uint8_t* packet, uint16_t length)
+{
+#ifdef USE_IPSECURE
+    uint16_t session = _dispatchSession;
+    if (session)
+    {
+        // Stream transport provides delivery acknowledgement; KNXnet/IP ACK
+        // frames are UDP-only and must not be emitted on TCP connections.
+        const uint16_t service = length >= 6 ? getWord(packet + 2) : 0;
+        if (_secureSessions.isTcp(session) && (service == TunnelingAck || service == DeviceConfigurationAck)) return true;
+        return _secureSessions.send(session, packet, length);
+    }
+#endif
+    return _platform.sendBytesUniCast(address, port, packet, length);
+}
+bool IpTunnelServer::sendToTunnel(KnxIpTunnelConnection& tunnel, bool control, uint8_t* packet, uint16_t length)
+{
+#ifdef USE_IPSECURE
+    if (!channelAuthorized(tunnel)) return false;
+    if (tunnel.SecureSessionId) return _secureSessions.send(tunnel.SecureSessionId, packet, length);
+#endif
+    return _platform.sendBytesUniCast(tunnel.IpAddress, control ? tunnel.PortCtrl : tunnel.PortData, packet, length);
+}
+#ifdef USE_IPSECURE
+bool IpTunnelServer::channelAuthorized(const KnxIpTunnelConnection& tunnel) const
+{
+    const uint16_t required = 1U << (tunnel.IsConfig ? 3 : 4);
+    if (!(_ipParameters.secureServiceFamilies() & required)) return true;
+    const uint16_t user = _secureSessions.user(tunnel.SecureSessionId);
+    if (!tunnel.SecureSessionId || !user) return false;
+    if (tunnel.IsConfig) return user == 1;
+    for (unsigned i = 0; i < KNX_TUNNELING; ++i)
+        if (&tunnels[i] == &tunnel) return _ipParameters.tunnelingUser(user, i + 1);
+    return false;
+}
+void IpTunnelServer::secureIpFrame(uint8_t* packet, uint16_t length, uint32_t address, uint16_t port, uint16_t session)
+{
+    if (!_secureSessions.authenticated(session)) return;
+    const uint16_t previous = _dispatchSession; _dispatchSession = session;
+    HandleIpFrame(packet, length, address, port); _dispatchSession = previous;
+}
+void IpTunnelServer::secureSessionClosed(uint16_t session)
+{
+    for (auto& tunnel : tunnels) if (tunnel.SecureSessionId == session) tunnel.Reset();
+}
+bool IpTunnelServer::isSecureConfigChannel(uint8_t channel) const
+{
+    for (const auto& tunnel : tunnels)
+        if (channel && tunnel.ChannelId == channel && tunnel.IsConfig && _secureSessions.user(tunnel.SecureSessionId) == 1) return true;
+    return false;
+}
+#endif
 
 void IpTunnelServer::HandleConnectionStateRequest(uint8_t* buffer, uint16_t length, uint32_t src_addr, uint16_t src_port)
 {
@@ -827,11 +988,11 @@ void IpTunnelServer::HandleConnectionStateRequest(uint8_t* buffer, uint16_t leng
         println(stateRequest.channelId());
 #endif
         KnxIpStateResponse stateRes(0x00, E_CONNECTION_ID);
-        _platform.sendBytesUniCast(src_addr, src_port, stateRes.data(), stateRes.totalLength());
+        sendUnicast(src_addr, src_port, stateRes.data(), stateRes.totalLength());
         return;
     }
 
-    if (!endpointMatches(tun, src_addr, src_port, true))
+    if (!matchesEndpoint(tun, src_addr, src_port, true))
         return;
 
     // TODO check knx connection!
@@ -841,7 +1002,7 @@ void IpTunnelServer::HandleConnectionStateRequest(uint8_t* buffer, uint16_t leng
 
     tun->lastHeartbeat = millis();
     KnxIpStateResponse stateRes(tun->ChannelId, E_NO_ERROR);
-    _platform.sendBytesUniCast(tun->IpAddress, tun->PortCtrl, stateRes.data(), stateRes.totalLength());
+    sendUnicast(tun->IpAddress, tun->PortCtrl, stateRes.data(), stateRes.totalLength());
 }
 
 void IpTunnelServer::HandleDisconnectRequest(uint8_t* buffer, uint16_t length, uint32_t src_addr, uint16_t src_port)
@@ -870,15 +1031,15 @@ void IpTunnelServer::HandleDisconnectRequest(uint8_t* buffer, uint16_t length, u
         println(discReq.channelId());
 #endif
         KnxIpDisconnectResponse discRes(0x00, E_CONNECTION_ID);
-        _platform.sendBytesUniCast(src_addr, src_port, discRes.data(), discRes.totalLength());
+        sendUnicast(src_addr, src_port, discRes.data(), discRes.totalLength());
         return;
     }
 
-    if (!endpointMatches(tun, src_addr, src_port, true))
+    if (!matchesEndpoint(tun, src_addr, src_port, true))
         return;
 
     KnxIpDisconnectResponse discRes(tun->ChannelId, E_NO_ERROR);
-    _platform.sendBytesUniCast(tun->IpAddress, tun->PortCtrl, discRes.data(), discRes.totalLength());
+    sendUnicast(tun->IpAddress, tun->PortCtrl, discRes.data(), discRes.totalLength());
     tun->Reset();
 }
 
@@ -888,7 +1049,7 @@ void IpTunnelServer::HandleDescriptionRequest(uint8_t* buffer, uint16_t length, 
     KnxIpDescriptionResponse descRes(_ipParameters, _deviceObject);
     const uint16_t responsePort = descReq.hpaiCtrl().ipPortNumber() ?
                                       descReq.hpaiCtrl().ipPortNumber() : src_port;
-    _platform.sendBytesUniCast(src_addr, responsePort, descRes.data(), descRes.totalLength());
+    sendUnicast(src_addr, responsePort, descRes.data(), descRes.totalLength());
 }
 
 void IpTunnelServer::HandleDeviceConfigurationRequest(uint8_t* buffer, uint16_t length, uint32_t src_addr, uint16_t src_port)
@@ -915,13 +1076,19 @@ void IpTunnelServer::HandleDeviceConfigurationRequest(uint8_t* buffer, uint16_t 
         tunnAck.connectionHeader().channelId(confReq.connectionHeader().channelId());
         tunnAck.connectionHeader().sequenceCounter(confReq.connectionHeader().sequenceCounter());
         tunnAck.connectionHeader().status(E_CONNECTION_ID);
-        _platform.sendBytesUniCast(src_addr, src_port, tunnAck.data(), tunnAck.totalLength());
+        sendUnicast(src_addr, src_port, tunnAck.data(), tunnAck.totalLength());
         return;
     }
 
-    if (!endpointMatches(tun, src_addr, src_port, false))
+    if (!matchesEndpoint(tun, src_addr, src_port, false))
         return;
 
+#ifdef USE_IPSECURE
+    if (_secureSessions.isTcp(tun->SecureSessionId))
+    {
+        tun->lastHeartbeat = millis(); _cemiServer.frameReceived(confReq.frame(), tun->ChannelId); return;
+    }
+#endif
     const uint8_t sequence = confReq.connectionHeader().sequenceCounter();
     if (sequence == tun->SequenceCounter_R)
     {
@@ -931,7 +1098,7 @@ void IpTunnelServer::HandleDeviceConfigurationRequest(uint8_t* buffer, uint16_t 
         tunnAck.connectionHeader().channelId(tun->ChannelId);
         tunnAck.connectionHeader().sequenceCounter(sequence);
         tunnAck.connectionHeader().status(E_NO_ERROR);
-        _platform.sendBytesUniCast(tun->IpAddress, tun->PortData, tunnAck.data(), tunnAck.totalLength());
+        sendUnicast(tun->IpAddress, tun->PortData, tunnAck.data(), tunnAck.totalLength());
         return;
     }
 
@@ -943,7 +1110,7 @@ void IpTunnelServer::HandleDeviceConfigurationRequest(uint8_t* buffer, uint16_t 
         tunnAck.connectionHeader().channelId(tun->ChannelId);
         tunnAck.connectionHeader().sequenceCounter(sequence);
         tunnAck.connectionHeader().status(E_SEQUENCE_NUMBER);
-        _platform.sendBytesUniCast(tun->IpAddress, tun->PortData, tunnAck.data(), tunnAck.totalLength());
+        sendUnicast(tun->IpAddress, tun->PortData, tunnAck.data(), tunnAck.totalLength());
         return;
     }
 
@@ -953,7 +1120,7 @@ void IpTunnelServer::HandleDeviceConfigurationRequest(uint8_t* buffer, uint16_t 
     tunnAck.connectionHeader().channelId(tun->ChannelId);
     tunnAck.connectionHeader().sequenceCounter(confReq.connectionHeader().sequenceCounter());
     tunnAck.connectionHeader().status(E_NO_ERROR);
-    _platform.sendBytesUniCast(tun->IpAddress, tun->PortData, tunnAck.data(), tunnAck.totalLength());
+    sendUnicast(tun->IpAddress, tun->PortData, tunnAck.data(), tunnAck.totalLength());
 
     tun->SequenceCounter_R = sequence;
     tun->lastHeartbeat = millis();
@@ -985,13 +1152,20 @@ void IpTunnelServer::HandleTunnelingRequest(uint8_t* buffer, uint16_t length, ui
         tunnAck.connectionHeader().channelId(tunnReq.connectionHeader().channelId());
         tunnAck.connectionHeader().sequenceCounter(tunnReq.connectionHeader().sequenceCounter());
         tunnAck.connectionHeader().status(E_CONNECTION_ID);
-        _platform.sendBytesUniCast(src_addr, src_port, tunnAck.data(), tunnAck.totalLength());
+        sendUnicast(src_addr, src_port, tunnAck.data(), tunnAck.totalLength());
         return;
     }
 
-    if (!endpointMatches(tun, src_addr, src_port, false))
+    if (!matchesEndpoint(tun, src_addr, src_port, false))
         return;
 
+#ifdef USE_IPSECURE
+    if (_secureSessions.isTcp(tun->SecureSessionId))
+    {
+        tun->lastHeartbeat = millis(); tunnReq.frame().sourceAddress(tun->IndividualAddress);
+        _cemiServer.frameReceived(tunnReq.frame(), tun->ChannelId); return;
+    }
+#endif
     uint8_t sequence = tunnReq.connectionHeader().sequenceCounter();
     if (sequence == tun->SequenceCounter_R)
     {
@@ -1006,7 +1180,7 @@ void IpTunnelServer::HandleTunnelingRequest(uint8_t* buffer, uint16_t length, ui
         tunnAck.connectionHeader().channelId(tun->ChannelId);
         tunnAck.connectionHeader().sequenceCounter(tunnReq.connectionHeader().sequenceCounter());
         tunnAck.connectionHeader().status(E_NO_ERROR);
-        _platform.sendBytesUniCast(tun->IpAddress, tun->PortData, tunnAck.data(), tunnAck.totalLength());
+        sendUnicast(tun->IpAddress, tun->PortData, tunnAck.data(), tunnAck.totalLength());
         return;
     }
     else if ((uint8_t)(sequence - 1) != tun->SequenceCounter_R)
@@ -1022,7 +1196,7 @@ void IpTunnelServer::HandleTunnelingRequest(uint8_t* buffer, uint16_t length, ui
         tunnAck.connectionHeader().channelId(tun->ChannelId);
         tunnAck.connectionHeader().sequenceCounter(sequence);
         tunnAck.connectionHeader().status(E_SEQUENCE_NUMBER);
-        _platform.sendBytesUniCast(tun->IpAddress, tun->PortData, tunnAck.data(), tunnAck.totalLength());
+        sendUnicast(tun->IpAddress, tun->PortData, tunnAck.data(), tunnAck.totalLength());
         return;
     }
 
@@ -1031,7 +1205,7 @@ void IpTunnelServer::HandleTunnelingRequest(uint8_t* buffer, uint16_t length, ui
     tunnAck.connectionHeader().channelId(tun->ChannelId);
     tunnAck.connectionHeader().sequenceCounter(tunnReq.connectionHeader().sequenceCounter());
     tunnAck.connectionHeader().status(E_NO_ERROR);
-    _platform.sendBytesUniCast(tun->IpAddress, tun->PortData, tunnAck.data(), tunnAck.totalLength());
+    sendUnicast(tun->IpAddress, tun->PortData, tunnAck.data(), tunnAck.totalLength());
 
     tun->SequenceCounter_R = tunnReq.connectionHeader().sequenceCounter();
 
@@ -1063,7 +1237,7 @@ void IpTunnelServer::HandleTunnelAcknowledgement(uint8_t* buffer, uint16_t lengt
 
     // ACKs never create state. Accept them only from the endpoint bound at
     // connect time and only for the most recently transmitted sequence.
-    if (!endpointMatches(tun, src_addr, src_port, false) ||
+    if (!matchesEndpoint(tun, src_addr, src_port, false) ||
         ack.connectionHeader().sequenceCounter() != (uint8_t)(tun->SequenceCounter_S - 1))
         return;
 

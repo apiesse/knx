@@ -46,6 +46,19 @@ class SecureApplicationLayer :  public ApplicationLayer
 
     void loop();
 
+    // Explicit keys are supplied only by the trusted Secure Proxy configuration.
+    // Proxy input is always Auth+Conf and goes through the normal replay journal.
+    bool decodeProxyGroupFrame(APDU& secure, APDU& plain, const uint8_t* key);
+    bool encodeProxyGroupFrame(APDU& plain, APDU& secure, const uint8_t* key,
+                               uint16_t proxySource, uint16_t destination);
+    bool requestSequenceSync(uint16_t destination, const SecurityControl& control,
+                             const uint8_t* targetSerial = nullptr, bool systemBroadcast = false);
+    // Anonymous cEMI local transport (SA=DA=TPCI=0). SecureService is rejected
+    // until the normative local SAL nonce/key-rotation mapping is verified.
+    // The callback and context are borrowed only for this synchronous dispatch.
+    bool localManagementIndication(APDU& request, bool connected,
+                                    void (*respond)(void*, APDU&), void* context);
+
   protected:
     // to transport layer
      void dataGroupRequest(AckType ack, HopCountType hopType, Priority priority, uint16_t tsap, APDU& apdu, const SecurityControl& secCtrl) override;
@@ -65,7 +78,7 @@ class SecureApplicationLayer :  public ApplicationLayer
     struct Addr
     {
         Addr() = default;
-        Addr(uint8_t addr) : addr{addr} {}
+        Addr(uint16_t addr) : addr{addr} {}
 
         uint16_t addr;
         AddrType addrType{AddrType::unknown};
@@ -84,13 +97,13 @@ class SecureApplicationLayer :  public ApplicationLayer
     struct GrpAddr : Addr
     {
         GrpAddr() {addrType = AddrType::group;}
-        GrpAddr(uint8_t addr) : Addr{addr} {addrType = AddrType::group;}
+        GrpAddr(uint16_t addr) : Addr{addr} {addrType = AddrType::group;}
     };
 
     struct IndAddr : Addr
     {
         IndAddr() { addrType = AddrType::individual; }
-        IndAddr(uint8_t addr) : Addr{addr} { addrType = AddrType::individual; }
+        IndAddr(uint16_t addr) : Addr{addr} { addrType = AddrType::individual; }
     };
 
     uint32_t calcAuthOnlyMac(uint8_t* apdu, uint8_t apduLength, const uint8_t *key, uint8_t* iv, uint8_t* ctr0);
@@ -116,32 +129,42 @@ class SecureApplicationLayer :  public ApplicationLayer
 
     bool isSyncService(APDU& secureAsdu);
 
-    void sendSyncRequest(uint16_t dstAddr, bool dstAddrIsGroupAddr, const SecurityControl &secCtrl, bool systemBcast);
+    bool sendSyncRequest(uint16_t dstAddr, bool dstAddrIsGroupAddr, const SecurityControl &secCtrl, bool systemBcast);
     void sendSyncResponse(uint16_t dstAddr, bool dstAddrIsGroupAddr, const SecurityControl &secCtrl, uint64_t remoteNextSeqNum, bool systemBcast);
     void receivedSyncRequest(uint16_t srcAddr, uint16_t dstAddr, bool dstAddrIsGroupAddr, const SecurityControl &secCtrl, uint8_t* seq, uint64_t challenge, bool systemBcast);
     void receivedSyncResponse(uint16_t remoteAddr, const SecurityControl &secCtrl, uint8_t* plainApdu);
 
-    bool decrypt(uint8_t* plainApdu, uint16_t plainapduLength, uint16_t srcAddr, uint16_t dstAddr, bool dstAddrIsGroupAddr, uint8_t tpci, uint8_t* secureAsdu, SecurityControl &secCtrl, bool systemBcast);
-    bool secure(uint8_t* buffer, uint16_t service, uint16_t srcAddr, uint16_t dstAddr, bool dstAddrIsGroupAddr, uint8_t tpci, uint8_t* apdu, uint16_t apduLength, const SecurityControl &secCtrl, bool systemBcast);
+    bool decrypt(uint8_t* plainApdu, uint16_t capacity, uint16_t srcAddr, uint16_t dstAddr, bool dstAddrIsGroupAddr, uint8_t tpci, uint8_t* secureAsdu, uint16_t asduLength, SecurityControl &secCtrl, bool systemBcast, bool localConfirmation = false, const uint8_t* explicitKey = nullptr);
+    bool secure(uint8_t* buffer, uint16_t service, uint16_t srcAddr, uint16_t dstAddr, bool dstAddrIsGroupAddr, uint8_t tpci, uint8_t* apdu, uint16_t apduLength, const SecurityControl &secCtrl, bool systemBcast, const uint8_t* explicitKey = nullptr);
 
-    bool decodeSecureApdu(APDU& secureApdu, APDU& plainApdu, SecurityControl &secCtrl);
+    bool decodeSecureApdu(APDU& secureApdu, APDU& plainApdu, SecurityControl &secCtrl, bool localConfirmation = false, const uint8_t* explicitKey = nullptr);
     bool createSecureApdu(APDU& plainApdu, APDU& secureApdu, const SecurityControl &secCtrl);
+    void localManagementResponse(APDU& response, const SecurityControl& control);
 
     void encryptAesCbc(uint8_t* buffer, uint16_t bufLen, const uint8_t* iv, const uint8_t* key);
     void xcryptAesCtr(uint8_t* buffer, uint16_t bufLen, const uint8_t* iv, const uint8_t* key);
 
     bool _syncReqBroadcastIncoming{false};
     bool _syncReqBroadcastOutgoing{false};
-    uint32_t _lastSyncRes;
-
-    Map<Addr, uint64_t, 1> _pendingOutgoingSyncRequests; // Store challenges for outgoing sync requests
-    Map<Addr, uint64_t, 1> _pendingIncomingSyncRequests; // Store challenges for incoming sync requests
-
-    uint64_t _sequenceNumberToolAccess = 50;
-    uint64_t _sequenceNumber = 0;
-
-    uint64_t _lastValidSequenceNumberTool = 0;
-    uint64_t _lastValidSequenceNumber = 0;
+    uint32_t _lastSyncRes = 0;
+    bool _syncResponseSent = false;
+    struct PendingSync
+    {
+        bool active = false;
+        bool toolAccess = false;
+        bool broadcast = false;
+        bool systemBroadcast = false;
+        uint16_t peer = 0;
+        uint64_t challenge = 0;
+        uint32_t started = 0;
+    };
+    PendingSync _outgoingSync;
+    PendingSync _incomingSync;
+    uint8_t _syncTargetSerial[6] = {};
+    SecurityControl _connectedSecurity{};
+    bool _localManagementActive = false;
+    void (*_localManagementRespond)(void*, APDU&) = nullptr;
+    void* _localManagementContext = nullptr;
 
     SecurityInterfaceObject& _secIfObj;
     DeviceObject& _deviceObj;

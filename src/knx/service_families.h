@@ -1,5 +1,9 @@
 #ifndef KNX_SERVICE_FAMILY_CORE
+#ifdef USE_IPSECURE
+#define KNX_SERVICE_FAMILY_CORE 2
+#else
 #define KNX_SERVICE_FAMILY_CORE 1
+#endif
 #endif
 
 #ifndef KNX_SERVICE_FAMILY_DEVICE_MANAGEMENT
@@ -12,4 +16,26 @@
 
 #ifndef KNX_SERVICE_FAMILY_ROUTING
 #define KNX_SERVICE_FAMILY_ROUTING 1
+#endif
+
+// Legacy discovery does not advertise the Security family; it is an
+// extended-search-only capability (ISO 22510 Core-v2 discovery).
+#if MASK_VERSION == 0x091A
+#ifdef KNX_TUNNELING
+#define KNX_IP_BASE_SERVICE_COUNT 4
+#else
+#define KNX_IP_BASE_SERVICE_COUNT 3
+#endif
+#else
+#ifdef KNX_TUNNELING
+#define KNX_IP_BASE_SERVICE_COUNT 3
+#else
+#define KNX_IP_BASE_SERVICE_COUNT 2
+#endif
+#endif
+#define KNX_IP_SERVICE_DIB_LENGTH (2 + 2 * KNX_IP_BASE_SERVICE_COUNT)
+#ifdef USE_IPSECURE
+#define KNX_IP_EXT_SERVICE_DIB_LENGTH (KNX_IP_SERVICE_DIB_LENGTH + 2)
+#else
+#define KNX_IP_EXT_SERVICE_DIB_LENGTH KNX_IP_SERVICE_DIB_LENGTH
 #endif

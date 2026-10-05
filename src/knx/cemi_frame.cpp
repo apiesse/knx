@@ -513,8 +513,23 @@ bool CemiFrame::validBuffer(const uint8_t* data, uint16_t length)
         return false;
 
     const MessageCode code = (MessageCode)data[0];
+    if (code == T_data_individual_req || code == T_data_individual_ind ||
+        code == T_data_connected_req || code == T_data_connected_ind)
+    {
+        // cEMI local transport: MC, AddIL, AddInfo, reserved6, LEN8, APDU.
+        if (length < 11 || static_cast<uint16_t>(data[1]) + 11 > length)
+            return false;
+        const uint16_t fields = 2 + data[1];
+        for (unsigned i = 0; i < 6; ++i)
+            if (data[fields + i] != 0) return false;
+        const uint8_t octets = data[fields + 6];
+        return octets >= 1 && octets <= MAX_APDU_OCTET_COUNT &&
+               fields + 8U + octets == length && (data[fields + 7] & 0xfc) == 0;
+    }
     if (code == M_PropRead_req || code == M_PropWrite_req)
         return length >= 7;
+    if (code == M_FuncPropCommand_req || code == M_FuncPropStateRead_req || code == M_FuncPropCommand_con)
+        return length >= 5;
 
     // The remaining management services handled (or explicitly ignored) by
     // CemiServer only inspect their message code. They still need one byte,

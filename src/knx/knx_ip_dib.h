@@ -15,6 +15,7 @@ enum DescriptionTypeCode : uint8_t
     MANUFACTURER_DATA = 0x06,
     TUNNELING_INFO = 0x07,
     EXTENDED_DEVICE_INFO = 0x08,
+    SECURED_SERVICE_FAMILIES = 0x06,
     MFR_DATA = 0xFE
 };
 

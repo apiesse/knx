@@ -138,7 +138,15 @@ enum PropertyID
     PID_MSG_TRANSMIT_TO_IP = 74,
     PID_MSG_TRANSMIT_TO_KNX = 75,
     PID_FRIENDLY_NAME = 76,
+    PID_TUNNELING_ADDRESSES = 79,
     PID_ROUTING_BUSY_WAIT_TIME = 78,
+    PID_BACKBONE_KEY = 91,
+    PID_DEVICE_AUTHENTICATION = 92,
+    PID_USER_PASSWORD_HASHES = 93,
+    PID_SECURED_SERVICE_FAMILIES = 94,
+    PID_MULTICAST_LATENCY_TOLERANCE = 95,
+    PID_SYNC_LATENCY_FRACTION = 96,
+    PID_TUNNELING_USERS = 97,
     PID_CUSTOM_RESERVED_TUNNELS_CTRL = 201, // custom propertiy to control the stacks behaviour for reserverd tunnels, not in Spec (PID >= 200)
     PID_CUSTOM_RESERVED_TUNNELS_IP = 202, // custom propertiy to control the stacks behaviour for reserverd tunnels, not in Spec (PID >= 200)
 
@@ -190,6 +198,11 @@ enum PropertyID
     PID_HOP_COUNT = 61,                         // Only interesting in primary if other medium(secondary) is open medium without hopcount
     PID_MEDIUM = 63,
     PID_FILTER_TABLE_USE = 67,
+    PID_PTP_CONFIG = 80,
+    PID_SECURITY_PROXY_GRP_KEY_TABLE = 81,
+    PID_BC_CONFIG = 82,
+    PID_PTP_ROUTING_TEMP = 83,
+    PID_BC_ROUTING_TEMP = 84,
     PID_RF_ENABLE_SBC = 112,                    // Exists only if medium for this router object is RF (PDT_FUNCTION)
     PID_IP_ENABLE_SBC = 120,                    // Exists only if medium for this router object is IP (PDT_FUNCTION)
 };

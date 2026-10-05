@@ -22,11 +22,14 @@ class KnxIpSearchResponseExtended : public KnxIpFrame
     IpHostProtocolAddressInformation& controlEndpoint();
     void setDeviceInfo(IpParameterObject& parameters, DeviceObject& deviceObject);
     void setSupportedServices();
+#ifdef USE_IPSECURE
+    void setSecuredServices(IpParameterObject& parameters);
+#endif
     void setIpConfig(IpParameterObject& parameters);
     void setIpCurrentConfig(IpParameterObject& parameters);
     void setKnxAddresses(IpParameterObject& parameters, DeviceObject& deviceObject);
     //setManuData
-    void setTunnelingInfo(IpParameterObject& parameters, DeviceObject& deviceObject, KnxIpTunnelConnection tunnels[]);
+    void setTunnelingInfo(IpParameterObject& parameters, DeviceObject& deviceObject, KnxIpTunnelConnection tunnels[], uint16_t user = 0);
     void setExtendedDeviceInfo();
     uint8_t *DIBs();
   private:

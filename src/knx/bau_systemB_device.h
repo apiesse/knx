@@ -22,6 +22,15 @@ class BauSystemBDevice : public BauSystemB
     BauSystemBDevice(Platform& platform);
     void loop() override;
     bool configured() override;
+    bool localManagementIndication(APDU& request, bool connected,
+                                  void (*respond)(void*, APDU&), void* context) override
+    {
+#ifdef USE_DATASECURE
+        return _appLayer.localManagementIndication(request, connected, respond, context);
+#else
+        return BauSystemB::localManagementIndication(request, connected, respond, context);
+#endif
+    }
     GroupObjectTableObject& groupObjectTable();
     using ReceiveHandler = void (*)(GroupObject&, void*);
     using TransmitHandler = void (*)(uint16_t, uint32_t, bool, void*);

@@ -42,6 +42,12 @@ enum MessageCode
     L_data_con = 0x2E,
     L_data_ind = 0x29,
 
+    // Device Management v2 local transport, no bus/control/address fields.
+    T_data_individual_req = 0x4A,
+    T_data_individual_ind = 0x94,
+    T_data_connected_req = 0x41,
+    T_data_connected_ind = 0x89,
+
     // Data Properties
     M_PropRead_req = 0xFC,
     M_PropRead_con = 0xFB,

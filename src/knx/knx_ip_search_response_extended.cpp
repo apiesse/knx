@@ -3,20 +3,7 @@
 #if KNX_SERVICE_FAMILY_CORE >= 2
 #ifdef USE_IP
 
-#define LEN_SERVICE_FAMILIES 2
-#if MASK_VERSION == 0x091A
-#ifdef KNX_TUNNELING
-#define LEN_SERVICE_DIB (2 + 4 * LEN_SERVICE_FAMILIES)
-#else
-#define LEN_SERVICE_DIB (2 + 3 * LEN_SERVICE_FAMILIES)
-#endif
-#else
-#ifdef KNX_TUNNELING
-#define LEN_SERVICE_DIB (2 + 3 * LEN_SERVICE_FAMILIES)
-#else
-#define LEN_SERVICE_DIB (2 + 2 * LEN_SERVICE_FAMILIES)
-#endif
-#endif
+#define LEN_SERVICE_DIB KNX_IP_EXT_SERVICE_DIB_LENGTH
 
 KnxIpSearchResponseExtended::KnxIpSearchResponseExtended(IpParameterObject& parameters, DeviceObject& deviceObject, int dibLength)
     : KnxIpFrame(LEN_KNXIP_HEADER + LEN_IPHPAI + dibLength),
@@ -71,6 +58,9 @@ void KnxIpSearchResponseExtended::setSupportedServices()
     _supportedServices.code(SUPP_SVC_FAMILIES);
     _supportedServices.serviceVersion(Core, KNX_SERVICE_FAMILY_CORE);
     _supportedServices.serviceVersion(DeviceManagement, KNX_SERVICE_FAMILY_DEVICE_MANAGEMENT);
+#ifdef USE_IPSECURE
+    _supportedServices.serviceVersion(Security, 1);
+#endif
 #ifdef KNX_TUNNELING
     _supportedServices.serviceVersion(Tunnelling, KNX_SERVICE_FAMILY_TUNNELING);
 #endif
@@ -94,6 +84,22 @@ void KnxIpSearchResponseExtended::setIpConfig(IpParameterObject& parameters)
 
     currentPos += LEN_IP_CONFIG_DIB;
 }
+
+#ifdef USE_IPSECURE
+void KnxIpSearchResponseExtended::setSecuredServices(IpParameterObject& parameters)
+{
+    const uint8_t length = parameters.securedServiceDibLength();
+    if (!length) return;
+    _data[currentPos++] = length;
+    _data[currentPos++] = SECURED_SERVICE_FAMILIES;
+    for (uint8_t family = 3; family <= 5; ++family)
+    {
+        if (!(parameters.secureServiceFamilies() & (1U << family))) continue;
+        _data[currentPos++] = family;
+        _data[currentPos++] = 1;
+    }
+}
+#endif
 
 void KnxIpSearchResponseExtended::setIpCurrentConfig(IpParameterObject& parameters)
 {
@@ -136,8 +142,11 @@ void KnxIpSearchResponseExtended::setKnxAddresses(IpParameterObject& parameters,
     currentPos += _knxAddresses.length();
 }
 
-void KnxIpSearchResponseExtended::setTunnelingInfo(IpParameterObject& parameters, DeviceObject& deviceObject, KnxIpTunnelConnection tunnels[])
+void KnxIpSearchResponseExtended::setTunnelingInfo(IpParameterObject& parameters, DeviceObject& deviceObject, KnxIpTunnelConnection tunnels[], uint16_t user)
 {
+#ifndef USE_IPSECURE
+    (void)user;
+#endif
     //println("setTunnelingInfo");
     KnxIpTunnelingInfoDIB _tunnelInfo(_data + currentPos);
     _tunnelInfo.length(4); //minlength
@@ -193,6 +202,12 @@ void KnxIpSearchResponseExtended::setTunnelingInfo(IpParameterObject& parameters
         }
 
         flags = ~flags;
+#ifdef USE_IPSECURE
+        // Slot authorization is contextual: plain discovery must not advertise
+        // protected slots as authorized; within a session consult PID97.
+        if ((parameters.secureServiceFamilies() & (1U << 4)) && !parameters.tunnelingUser(user, i + 1))
+            flags &= ~(1U << 1);
+#endif
 
         _tunnelInfo.tunnelingSlot(additional, flags);
     }
