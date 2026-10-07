@@ -155,14 +155,16 @@ uint8_t BauSystemB::managementAccessLevel(const SecurityControl& secCtrl)
 #endif
 }
 
-bool BauSystemB::managementMemoryAccessAllowed(const SecurityControl& secCtrl)
+bool BauSystemB::managementMemoryAccessAllowed(const SecurityControl& secCtrl, uint32_t address, size_t length)
 {
+    (void)address; (void)length;
     if (authenticatedTool(secCtrl)) return true;
     // Key storage can exist even with runtime security disabled. Do not let raw
     // memory services bypass the property-level confidentiality checks.
 #ifdef USE_DATASECURE
     auto* security = static_cast<SecurityInterfaceObject*>(getInterfaceObject(OT_SECURITY, 1));
-    if (security && (security->isFactoryProvisioned() || security->isLoaded())) return false;
+    if (security && (security->isFactoryProvisioned() || security->isLoaded()) &&
+        !_memory.applicationMemoryRange(address, length)) return false;
 #endif
     InterfaceObject* ip = getInterfaceObject(OT_IP_PARAMETER, 1);
     if (populatedProperty(ip, PID_BACKBONE_KEY) || populatedProperty(ip, PID_DEVICE_AUTHENTICATION) ||
@@ -279,7 +281,7 @@ void BauSystemB::deviceDescriptorReadIndication(Priority priority, HopCountType 
 void BauSystemB::memoryRouterWriteIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint8_t number,
                                              uint16_t memoryAddress, uint8_t *data)
 {
-    if (!managementMemoryAccessAllowed(secCtrl))
+    if (!managementMemoryAccessAllowed(secCtrl, memoryAddress, number))
         return;
     uint8_t* destination = _memory.toAbsoluteChecked(memoryAddress, number);
     if (number == 0 || data == nullptr || destination == nullptr)
@@ -301,20 +303,20 @@ void BauSystemB::memoryRouterWriteIndication(Priority priority, HopCountType hop
 void BauSystemB::memoryRouterReadIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint8_t number,
                                             uint16_t memoryAddress, uint8_t *data)
 {
-    if (!managementMemoryAccessAllowed(secCtrl))
+    if (!managementMemoryAccessAllowed(secCtrl, memoryAddress, number))
         number = 0;
     applicationLayer().memoryRouterReadResponse(AckRequested, priority, hopType, asap, secCtrl, number, memoryAddress, data);
 }
 
 void BauSystemB::memoryRoutingTableReadIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint8_t number, uint16_t memoryAddress, uint8_t *data)
 {
-    if (!managementMemoryAccessAllowed(secCtrl))
+    if (!managementMemoryAccessAllowed(secCtrl, memoryAddress, number))
         number = 0;
     applicationLayer().memoryRoutingTableReadResponse(AckRequested, priority, hopType, asap, secCtrl, number, memoryAddress, data);
 }
 void BauSystemB::memoryRoutingTableReadIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint8_t number, uint16_t memoryAddress)
 {
-    if (!managementMemoryAccessAllowed(secCtrl))
+    if (!managementMemoryAccessAllowed(secCtrl, memoryAddress, number))
     {
         memoryRoutingTableReadIndication(priority, hopType, asap, secCtrl, 0, memoryAddress, nullptr);
         return;
@@ -326,7 +328,7 @@ void BauSystemB::memoryRoutingTableReadIndication(Priority priority, HopCountTyp
 
 void BauSystemB::memoryRoutingTableWriteIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint8_t number, uint16_t memoryAddress, uint8_t *data)
 {
-    if (!managementMemoryAccessAllowed(secCtrl))
+    if (!managementMemoryAccessAllowed(secCtrl, memoryAddress, number))
         return;
     uint8_t* destination = _memory.toAbsoluteChecked(memoryAddress, number);
     if (number == 0 || data == nullptr || destination == nullptr)
@@ -345,7 +347,7 @@ void BauSystemB::memoryRoutingTableWriteIndication(Priority priority, HopCountTy
 void BauSystemB::memoryWriteIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint8_t number,
     uint16_t memoryAddress, uint8_t * data)
 {
-    if (!managementMemoryAccessAllowed(secCtrl))
+    if (!managementMemoryAccessAllowed(secCtrl, memoryAddress, number))
         return;
     uint8_t* destination = _memory.toAbsoluteChecked(memoryAddress, number);
     if (number == 0 || data == nullptr || destination == nullptr)
@@ -358,7 +360,7 @@ void BauSystemB::memoryWriteIndication(Priority priority, HopCountType hopType, 
 void BauSystemB::memoryReadIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint8_t number,
     uint16_t memoryAddress, uint8_t * data)
 {
-    if (!managementMemoryAccessAllowed(secCtrl))
+    if (!managementMemoryAccessAllowed(secCtrl, memoryAddress, number))
         number = 0;
     applicationLayer().memoryReadResponse(AckRequested, priority, hopType, asap, secCtrl, number, memoryAddress, data);
 }
@@ -366,7 +368,7 @@ void BauSystemB::memoryReadIndication(Priority priority, HopCountType hopType, u
 void BauSystemB::memoryReadIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint8_t number,
     uint16_t memoryAddress)
 {
-    if (!managementMemoryAccessAllowed(secCtrl))
+    if (!managementMemoryAccessAllowed(secCtrl, memoryAddress, number))
     {
         applicationLayer().memoryReadResponse(AckRequested, priority, hopType, asap, secCtrl, 0, memoryAddress, nullptr);
         return;
@@ -378,7 +380,7 @@ void BauSystemB::memoryReadIndication(Priority priority, HopCountType hopType, u
 
 void BauSystemB::memoryExtWriteIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint8_t number, uint32_t memoryAddress, uint8_t * data)
 {
-    if (!managementMemoryAccessAllowed(secCtrl))
+    if (!managementMemoryAccessAllowed(secCtrl, memoryAddress, number))
     {
         applicationLayer().memoryExtWriteResponse(AckRequested, priority, hopType, asap, secCtrl,
                                                   ReturnCodes::AccessDenied, 0, memoryAddress, nullptr);
@@ -399,7 +401,7 @@ void BauSystemB::memoryExtWriteIndication(Priority priority, HopCountType hopTyp
 
 void BauSystemB::memoryExtReadIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint8_t number, uint32_t memoryAddress)
 {
-    if (!managementMemoryAccessAllowed(secCtrl))
+    if (!managementMemoryAccessAllowed(secCtrl, memoryAddress, number))
     {
         applicationLayer().memoryExtReadResponse(AckRequested, priority, hopType, asap, secCtrl,
                                                  ReturnCodes::AccessDenied, 0, memoryAddress, nullptr);
@@ -476,7 +478,7 @@ void BauSystemB::authorizeIndication(Priority priority, HopCountType hopType, ui
 
 void BauSystemB::userMemoryReadIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint8_t number, uint32_t memoryAddress)
 {
-    if (!managementMemoryAccessAllowed(secCtrl))
+    if (!managementMemoryAccessAllowed(secCtrl, memoryAddress, number))
     {
         applicationLayer().userMemoryReadResponse(AckRequested, priority, hopType, asap, secCtrl, 0, memoryAddress, nullptr);
         return;
@@ -488,7 +490,7 @@ void BauSystemB::userMemoryReadIndication(Priority priority, HopCountType hopTyp
 
 void BauSystemB::userMemoryWriteIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint8_t number, uint32_t memoryAddress, uint8_t* data)
 {
-    if (!managementMemoryAccessAllowed(secCtrl))
+    if (!managementMemoryAccessAllowed(secCtrl, memoryAddress, number))
         return;
     _memory.writeMemory(memoryAddress, number, data);
 

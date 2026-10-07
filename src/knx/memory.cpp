@@ -308,6 +308,12 @@ void Memory::freeMemory(uint8_t* ptr)
         _saveTimeout = 1; // prevent 0=disabled; no impact by minimal increased timeout
 }
 
+bool Memory::applicationMemoryRange(uint32_t relativeAddress, size_t size)
+{
+    return size != 0 && relativeAddress >= alignToPageSize(_metadataSize) &&
+           toAbsoluteChecked(relativeAddress, size) != nullptr;
+}
+
 void Memory::writeMemory(uint32_t relativeAddress, size_t size, uint8_t* data)
 {
     // EC: bounds-check against the NVM size (wrap-safe) -> a management write (Memory/User/Ext-MemoryWrite),

@@ -136,7 +136,8 @@ class BauSystemB : protected BusAccessUnit
     bool secureManagementEnabled();
     bool sensitiveSecurityProperty(const Property* property);
     uint8_t managementAccessLevel(const SecurityControl& secCtrl = SecurityControl{});
-    bool managementMemoryAccessAllowed(const SecurityControl& secCtrl = SecurityControl{});
+    bool managementMemoryAccessAllowed(const SecurityControl& secCtrl = SecurityControl{},
+                                       uint32_t address = 0, size_t length = 0);
     bool managementWriteAllowed(const SecurityControl& secCtrl = SecurityControl{});
     bool propertyReadAllowed(const Property* property, const SecurityControl& secCtrl = SecurityControl{});
     bool propertyWriteAllowed(const Property* property, const SecurityControl& secCtrl = SecurityControl{});

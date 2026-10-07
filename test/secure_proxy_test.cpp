@@ -34,6 +34,8 @@ public:
     void fatalError() override { std::abort(); }
     uint8_t* getNonVolatileMemoryStart() override { return storage; }
     size_t getNonVolatileMemorySize() override { return sizeof(storage); }
+    uint8_t* getEepromBuffer(uint32_t size) override
+    { assert(size == sizeof(storage)); return storage; }
     void commitNonVolatileMemory() override { ++commits; }
     bool readFactoryDeviceKey(uint8_t key[16]) override
     { if (!factoryProvisioned) return false; for (unsigned i = 0; i < 16; ++i) key[i] = i + 1; return true; }
@@ -373,6 +375,45 @@ static void secureCapablePlainCompatibilityTest()
     }
 }
 
+static void plainCommissioningMemoryTest()
+{
+    TestPlatform platform;
+    TestDevice device(platform, 0x1101);
+    uint8_t* data = device.memory().allocMemory(16);
+    assert(data != nullptr);
+    const uint32_t address = device.memory().toRelative(data);
+    assert(device.security().isFactoryProvisioned());
+    assert(!device.security().isSecurityModeEnabled());
+    device.deviceObject().progMode(false);
+    assert(!device.managementMemoryAccessAllowed(SecurityControl{}, address, 16));
+    device.deviceObject().progMode(true);
+    assert(device.managementMemoryAccessAllowed(SecurityControl{}, address, 16));
+    uint8_t payload[2] = {0x12, 0x34};
+    device.memoryWriteIndication(LowPriority, NetworkLayerParameter, 0x2201,
+                                 SecurityControl{}, sizeof(payload), address, payload);
+    assert(data[0] == 0x12 && data[1] == 0x34);
+    const uint8_t metadata = platform.storage[0];
+    device.memoryWriteIndication(LowPriority, NetworkLayerParameter, 0x2201,
+                                 SecurityControl{}, sizeof(payload), 0, payload);
+    assert(platform.storage[0] == metadata);
+    // Provisioned Tool/FDSK and all metadata stay inaccessible over plain memory.
+    assert(!device.managementMemoryAccessAllowed(SecurityControl{}, 0, 16));
+    assert(!device.managementMemoryAccessAllowed(SecurityControl{}, address - 1, 2));
+    assert(!device.managementMemoryAccessAllowed(SecurityControl{}, 0xfffffff0, 32));
+    uint8_t mode[3] = {0, 0, 1}, result[8] = {};
+    uint8_t length = sizeof(result);
+    device.security().command(PID_SECURITY_MODE, mode, sizeof(mode), result, length);
+    assert(!device.managementMemoryAccessAllowed(SecurityControl{}, address, 16));
+    payload[0] = 0x56;
+    device.memoryWriteIndication(LowPriority, NetworkLayerParameter, 0x2201,
+                                 SecurityControl{}, sizeof(payload), address, payload);
+    assert(data[0] == 0x12);
+    assert(device.managementMemoryAccessAllowed(SecurityControl{true, AuthConf}, address, 16));
+    device.memoryWriteIndication(LowPriority, NetworkLayerParameter, 0x2201,
+                                 SecurityControl{true, AuthConf}, sizeof(payload), address, payload);
+    assert(data[0] == 0x56);
+}
+
 static void legacyPropertyAbsenceTest()
 {
 #ifndef USE_IPSECURE
@@ -652,6 +693,7 @@ int main()
 {
     managementAndResponseTest(); secureCapablePlainCompatibilityTest();
     legacyPropertyAbsenceTest();
+    plainCommissioningMemoryTest();
     roomUnitCapacityTest();
     proxyRoutingTest(); proxyDurabilityTest();
     propertyStorageRegressionTest();

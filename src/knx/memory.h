@@ -54,6 +54,8 @@ class Memory
     uint8_t* toAbsolute(uint32_t relativeAddress);
     uint8_t* toAbsoluteChecked(uint32_t relativeAddress, size_t size);
     uint32_t toRelative(uint8_t* absoluteAddress);
+    /* Excludes serialized properties/keys in the metadata prefix. */
+    bool applicationMemoryRange(uint32_t relativeAddress, size_t size);
 
     void versionCheckCallback(VersionCheckCallback func);
     VersionCheckCallback versionCheckCallback();

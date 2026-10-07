@@ -321,7 +321,7 @@ class ManagementCallbackContractTest(unittest.TestCase):
 class ManagementMemoryWriteContractTest(unittest.TestCase):
     def _assert_checked_write(self, qualified_name: str, verify_response: str) -> None:
         body = _function_body("bau_systemB.cpp", qualified_name)
-        authorization = body.find("!managementMemoryAccessAllowed(secCtrl)")
+        authorization = body.find("!managementMemoryAccessAllowed(secCtrl, memoryAddress, number)")
         destination = body.find("_memory.toAbsoluteChecked(memoryAddress, number)")
         invalid = _assert_contains(
             self,
@@ -355,7 +355,7 @@ class ManagementMemoryWriteContractTest(unittest.TestCase):
 
     def test_extended_memory_write_returns_checked_memory_only(self) -> None:
         body = _function_body("bau_systemB.cpp", "BauSystemB::memoryExtWriteIndication")
-        authorization = body.find("!managementMemoryAccessAllowed(secCtrl)")
+        authorization = body.find("!managementMemoryAccessAllowed(secCtrl, memoryAddress, number)")
         destination = body.find("_memory.toAbsoluteChecked(memoryAddress, number)")
         invalid = body.find("destination == nullptr")
         write = body.find("_memory.writeMemory(memoryAddress, number, data)")
