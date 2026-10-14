@@ -280,3 +280,6 @@ doc/build
 .vscode/.cortex-debug.registers.state.json
 .vscode/.cortex-debug.peripherals.state.json
 .vscode/settings.json
+
+# macOS Finder metadata
+.DS_Store
