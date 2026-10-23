@@ -80,6 +80,7 @@ class ApplicationLayer
     virtual void dataIndividualConfirm(AckType ack, HopCountType hopType, Priority priority, uint16_t tsap, APDU& apdu, bool status);
     virtual void dataConnectedIndication(Priority priority, uint16_t tsap, APDU& apdu);
     virtual void dataConnectedConfirm(uint16_t tsap);
+    void confirmedRestartResponseAcked();
     void connectIndication(uint16_t tsap);
     void connectConfirm(uint16_t destination, uint16_t tsap, bool status);
     void disconnectIndication(uint16_t tsap);
@@ -195,6 +196,9 @@ class ApplicationLayer
 
     // Protected: we need to access it in derived class SecureApplicationLayer
     TransportLayer* _transportLayer = 0;
+    // Scoped to restartResponse's synchronous dispatch. The secure subclass
+    // may wrap the APDU, so the transport cannot identify it by wire bytes.
+    bool _sendingConfirmedRestartResponse = false;
 
     static const SecurityControl noSecurity;
 

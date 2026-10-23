@@ -406,6 +406,11 @@ void ApplicationLayer::dataConnectedConfirm(uint16_t tsap)
     dataConnectedConfirm(tsap, noSecurity);
 }
 
+void ApplicationLayer::confirmedRestartResponseAcked()
+{
+    _bau.confirmedRestartResponseAcked();
+}
+
 void ApplicationLayer::dataConnectedConfirm(uint16_t tsap, const SecurityControl& secCtrl)
 {
     //FIXME: implement dataConnectedConfirm DataSecurity
@@ -598,7 +603,9 @@ void ApplicationLayer::restartResponse(AckType ack, Priority priority, HopCountT
     data[2] = processTime >> 8;
     data[3] = processTime & 0xFF;
 
+    _sendingConfirmedRestartResponse = (errorCode == 0);
     individualSend(ack, hopType, priority, _connectedTsap, apdu, secCtrl);
+    _sendingConfirmedRestartResponse = false;
 }
 
 //TODO: ApplicationLayer::systemNetworkParameterReadRequest()
@@ -1736,5 +1743,5 @@ void ApplicationLayer::dataConnectedRequest(uint16_t tsap, Priority priority, AP
 {
     (void)secCtrl; // We do not need security related information in the plain application layer
     // apdu must be valid until it was confirmed
-    _transportLayer->dataConnectedRequest(tsap, priority, apdu);
+    _transportLayer->dataConnectedRequest(tsap, priority, apdu, _sendingConfirmedRestartResponse);
 }

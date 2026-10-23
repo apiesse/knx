@@ -90,6 +90,7 @@ class BauSystemB : protected BusAccessUnit
                                  uint32_t memoryAddress) override;
     void deviceDescriptorReadIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint8_t descriptorType) override;
     void restartRequestIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, RestartType restartType, EraseCode eraseCode, uint8_t channel) override;
+    void confirmedRestartResponseAcked() override;
     void authorizeIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint32_t key) override;
     void userMemoryReadIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint8_t number, uint32_t memoryAddress) override;
     void userMemoryWriteIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint8_t number,
@@ -158,6 +159,8 @@ class BauSystemB : protected BusAccessUnit
     RestartState _restartState = Idle;
     SecurityControl _restartSecurity;
     uint32_t _restartDelay = 0;
+    bool _confirmedRestartPending = false;
+    uint32_t _confirmedRestartQueuedAt = 0;
     BeforeRestartCallback _beforeRestart = 0;
     FunctionPropertyCallback _functionProperty = 0;
     FunctionPropertyCallback _functionPropertyState = 0;

@@ -47,6 +47,8 @@ class BusAccessUnit
                                                      uint8_t descriptortype, uint8_t* deviceDescriptor);
     virtual void restartRequestLocalConfirm(AckType ack, Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, bool status);
     virtual void restartRequestIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, RestartType restartType, EraseCode eraseCode, uint8_t channel);
+    // T_ACK for the actual connected A_RestartResponse, not the link-layer send confirm.
+    virtual void confirmedRestartResponseAcked() {}
     virtual void propertyValueReadLocalConfirm(AckType ack, Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl,
                                                uint8_t objectIndex, uint8_t propertyId, uint8_t numberOfElements, uint16_t startIndex, bool status);
     virtual void propertyValueReadIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, uint8_t objectIndex,

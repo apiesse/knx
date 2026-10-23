@@ -465,7 +465,8 @@ void TransportLayer::disconnectRequest(uint16_t tsap, Priority priority)
     }
 }
 
-void TransportLayer::dataConnectedRequest(uint16_t tsap, Priority priority, APDU& apdu)
+void TransportLayer::dataConnectedRequest(uint16_t tsap, Priority priority, APDU& apdu,
+                                          bool confirmedRestartResponse)
 {
     //print.print("-> TL  ");
     //apdu.printPDU();
@@ -477,11 +478,11 @@ void TransportLayer::dataConnectedRequest(uint16_t tsap, Priority priority, APDU
         break;
     case OpenIdle:
         _currentState = OpenWait;
-        A7(priority, apdu);
+        A7(priority, apdu, confirmedRestartResponse);
         break;
     case OpenWait:
     case Connecting:
-        A11(tsap, priority, apdu);
+        A11(tsap, priority, apdu, confirmedRestartResponse);
         break;
     default:
         break;
@@ -569,7 +570,8 @@ void TransportLayer::loop()
     {
         //retry saved event
         _savedConnectingValid = false;
-        dataConnectedRequest(_savedTsapConnecting, _savedPriorityConnecting, _savedFrameConnecting.apdu());
+        dataConnectedRequest(_savedTsapConnecting, _savedPriorityConnecting,
+                             _savedFrameConnecting.apdu(), _savedConnectingConfirmedRestartResponse);
     }
 }
 
@@ -639,13 +641,14 @@ void TransportLayer::A6(uint16_t tsap)
     disableAckTimeout();
 }
 
-void TransportLayer::A7(Priority priority, APDU& apdu)
+void TransportLayer::A7(Priority priority, APDU& apdu, bool confirmedRestartResponse)
 {
     _savedPriority = priority;
     TPDU& tpdu = apdu.frame().tpdu();
     tpdu.type(DataConnected);
     tpdu.sequenceNumber(_seqNoSend);
     _savedFrame = apdu.frame();
+    _savedFrameConfirmedRestartResponse = confirmedRestartResponse;
     _networkLayer->dataIndividualRequest(AckRequested, _connectionAddress, NetworkLayerParameter, priority, tpdu);
     _repCount = 0;
     enableAckTimeout();
@@ -655,8 +658,15 @@ void TransportLayer::A7(Priority priority, APDU& apdu)
 void TransportLayer::A8()
 {
     disableAckTimeout();
+    // This flag follows the exact response through the optional Secure wrapper
+    // and the connected-transport queue. A8 is reached only for its matching
+    // T_ACK from the peer, never for a link-layer send confirmation.
+    const bool confirmedRestartResponse = _savedFrameConfirmedRestartResponse;
+    _savedFrameConfirmedRestartResponse = false;
     incSeqNr(_seqNoSend);
     _applicationLayer.dataConnectedConfirm(0);
+    if (confirmedRestartResponse)
+        _applicationLayer.confirmedRestartResponseAcked();
     enableConnectionTimeout();
 }
 
@@ -679,12 +689,14 @@ void TransportLayer::A10(uint16_t source)
     _networkLayer->dataIndividualRequest(AckRequested, source, NetworkLayerParameter, SystemPriority, tpdu);
 }
 
-void TransportLayer::A11(uint16_t tsap, Priority priority, APDU& apdu)
+void TransportLayer::A11(uint16_t tsap, Priority priority, APDU& apdu,
+                          bool confirmedRestartResponse)
 {
     _savedTsapConnecting = tsap;
     _savedPriorityConnecting = priority;
     _savedFrameConnecting = apdu.frame();
     _savedConnectingValid = true;
+    _savedConnectingConfirmedRestartResponse = confirmedRestartResponse;
 }
 
 void TransportLayer::A12(uint16_t destination, Priority priority)

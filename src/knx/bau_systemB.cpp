@@ -22,6 +22,9 @@ static constexpr auto kFunctionPropertyResultBufferMaxSize = 0xFF;
 static constexpr uint8_t kFunctionPropertyResultMax = 251;
 static constexpr uint8_t kFunctionPropertyResultMaxExt = 248;
 static constexpr auto kRestartProcessTime = 3;
+// ETS waits roughly three seconds for A_RestartResponse. On timeout, retain
+// the running application and let a new connection retry the request.
+static constexpr uint32_t kConfirmedRestartAckTimeoutMs = 2500;
 
 BauSystemB::BauSystemB(Platform& platform): _memory(platform, _deviceObj),
      _appProgram(_memory),
@@ -429,6 +432,11 @@ void BauSystemB::localFactoryReset()
 
 void BauSystemB::restartRequestIndication(Priority priority, HopCountType hopType, uint16_t asap, const SecurityControl &secCtrl, RestartType restartType, EraseCode eraseCode, uint8_t channel)
 {
+    // The transport can accept a second request while its first response is
+    // still awaiting T_ACK. Never let that duplicate re-arm the pending reset;
+    // otherwise the older response's ACK could confirm the newer operation.
+    if (_confirmedRestartPending)
+        return;
     /* A_Restart is a remote management mutation. The trusted local reset API above
        does not pass through this gate. */
     if (!managementWriteAllowed(secCtrl))
@@ -447,12 +455,17 @@ void BauSystemB::restartRequestIndication(Priority priority, HopCountType hopTyp
     else if (restartType == RestartType::MasterReset)
     {
         uint8_t errorCode = checkmasterResetValidity(eraseCode, channel);
-        // We send the restart response now before actually applying the reset values
-        // Processing time is kRestartProcessTime (example 3 seconds) that we require for the applying the master reset with restart
+        // The response is queued in the transport and TPUART. Restarting here
+        // would discard it before ETS receives its application response.
+        _confirmedRestartPending = false;
         applicationLayer().restartResponse(AckRequested, priority, hopType, secCtrl, errorCode, (errorCode == 0) ? kRestartProcessTime : 0);
         if (errorCode != 0)
             return;
         doMasterReset(eraseCode, channel);
+        _memory.writeMemory();
+        _confirmedRestartQueuedAt = millis();
+        _confirmedRestartPending = true;
+        return;
     }
     else
     {
@@ -463,6 +476,15 @@ void BauSystemB::restartRequestIndication(Priority priority, HopCountType hopTyp
 
     // Flush the EEPROM before resetting
     _memory.writeMemory();
+    _platform.restart();
+}
+
+void BauSystemB::confirmedRestartResponseAcked()
+{
+    if (!_confirmedRestartPending)
+        return;
+    _confirmedRestartPending = false;
+    println("Confirmed restart response T_ACK; restarting");
     _platform.restart();
 }
 
@@ -1017,6 +1039,14 @@ void BauSystemB::connectConfirm(uint16_t tsap)
 
 void BauSystemB::nextRestartState()
 {
+    if (_confirmedRestartPending && millis() - _confirmedRestartQueuedAt >= kConfirmedRestartAckTimeoutMs)
+    {
+        _confirmedRestartPending = false;
+        println("Confirmed restart response T_ACK timeout; keeping device running");
+        // Drop an old in-flight response before ETS opens another management
+        // connection. Its late ACK must never confirm the next request.
+        applicationLayer().disconnectRequest(SystemPriority);
+    }
     switch (_restartState)
     {
         case Idle:

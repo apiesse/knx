@@ -56,7 +56,8 @@ public:
     void connectRequest(uint16_t destination, Priority priority);
     void disconnectRequest(uint16_t tsap, Priority priority);
     // apdu must be valid until it was confirmed
-    void dataConnectedRequest(uint16_t tsap, Priority priority, APDU& apdu);
+    void dataConnectedRequest(uint16_t tsap, Priority priority, APDU& apdu,
+                              bool confirmedRestartResponse = false);
 
     uint8_t getTpciSeqNum();
     uint16_t getConnectionAddress();
@@ -76,6 +77,8 @@ private:
     CemiFrame _savedFrameConnecting;
     uint16_t _savedTsapConnecting;
     bool _savedConnectingValid = false;
+    bool _savedFrameConfirmedRestartResponse = false;
+    bool _savedConnectingConfirmedRestartResponse = false;
     enum StateEvent
     {
         E0, E1, E2, E3, E4, E5, E6, E7, E8, E9, E10, E11, E12, E13, E14,
@@ -90,11 +93,11 @@ private:
     void A4(uint16_t source, Priority priority, TPDU& recTpdu);
     void A5(uint16_t source);
     void A6(uint16_t source);
-    void A7(Priority priority, APDU& apdu);
+    void A7(Priority priority, APDU& apdu, bool confirmedRestartResponse);
     void A8();
     void A9();
     void A10(uint16_t source);
-    void A11(uint16_t tsap, Priority priority, APDU& apdu);
+    void A11(uint16_t tsap, Priority priority, APDU& apdu, bool confirmedRestartResponse);
     void A12(uint16_t destination, Priority priority);
     void A13(uint16_t destination);
     void A14(uint16_t destination, Priority priority);
