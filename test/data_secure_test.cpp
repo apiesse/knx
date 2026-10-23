@@ -112,6 +112,29 @@ public:
         pushInt(_memory.toRelative(memory), saved.data() + 5); table.restore(saved.data());
     }
     using BauSystemBDevice::sendNextGroupTelegram;
+    bool baseConfigured() { return BauSystemBDevice::configured(); }
+    void loadApplication()
+    {
+        const uint8_t version[5] = {};
+        assert(_appProgram.property(PID_PROG_VERSION)->write(1, 1, version) == 1);
+        uint8_t* memory = _memory.allocMemory(2); assert(memory);
+        pushWord(0, memory);
+        std::vector<uint8_t> saved(_appProgram.saveSize());
+        _appProgram.save(saved.data());
+        saved[5] = LS_LOADED; // ApplicationProgramObject prepends the 5-byte version.
+        pushInt(2, saved.data() + 6);
+        pushInt(_memory.toRelative(memory), saved.data() + 10);
+        _appProgram.restore(saved.data());
+    }
+    void securityLoadEvent(uint8_t event)
+    { assert(_secIfObj.property(PID_LOAD_STATE_CONTROL)->write(1, 1, &event) == 1); }
+    void securityMode(bool enabled)
+    {
+        uint8_t command[3] = {0, 0, static_cast<uint8_t>(enabled)};
+        uint8_t result[3] = {}, length = sizeof(result);
+        _secIfObj.command(PID_SECURITY_MODE, command, sizeof(command), result, length);
+        assert(length == 2 && result[0] == ReturnCodes::Success);
+    }
 };
 
 static std::vector<uint8_t> hex(const char* text)
@@ -214,9 +237,62 @@ static void synchronizesFullAddressesAndExpiresChallenges()
     assert(!first.sal().requestSequenceSync(0x2302, tool));
 }
 
+static void plainConfigurationDoesNotRequireSecurityDownload()
+{
+    {
+        TestPlatform platform; TestDevice device(platform);
+        device.loadApplication();
+        device.securityLoadEvent(LE_UNLOAD);
+        assert(device.security().loadState() == LS_UNLOADED);
+        assert(device.baseConfigured());
+    }
+    {
+        TestPlatform platform; TestDevice device(platform);
+        device.loadApplication();
+        device.securityFlag(0);
+        device.securityLoadEvent(LE_UNLOAD);
+        assert(device.baseConfigured());
+    }
+    {
+        TestPlatform platform; TestDevice device(platform);
+        device.loadApplication();
+        device.securityMode(true);
+        device.securityLoadEvent(LE_UNLOAD);
+        assert(!device.baseConfigured());
+    }
+    for (uint8_t flag : {uint8_t(1), uint8_t(2), uint8_t(4)})
+    {
+        TestPlatform platform; TestDevice device(platform);
+        device.loadApplication();
+        device.securityFlag(flag);
+        device.securityLoadEvent(LE_UNLOAD);
+        assert(!device.baseConfigured());
+    }
+    {
+        TestPlatform platform; TestDevice device(platform);
+        device.loadApplication();
+        device.securityLoadEvent(LE_START_LOADING);
+        assert(!device.baseConfigured());
+    }
+    {
+        TestPlatform platform; TestDevice device(platform);
+        device.loadApplication();
+        device.securityLoadEvent(LE_ADDITIONAL_LOAD_CONTROLS);
+        assert(!device.baseConfigured());
+    }
+    {
+        TestPlatform platform; TestDevice device(platform);
+        device.loadApplication();
+        device.securityMode(true);
+        device.securityFlag(3);
+        assert(device.baseConfigured());
+    }
+}
+
 int main()
 {
     knownAnswersAndReplay(); authenticationOnlyUsesInnerApduAndDurableReplay();
     longAuthenticationProtectsEveryByte();
     failureDoesNotWedgeGroupQueue(); synchronizesFullAddressesAndExpiresChallenges();
+    plainConfigurationDoesNotRequireSecurityDownload();
 }

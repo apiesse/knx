@@ -590,6 +590,31 @@ bool SecurityInterfaceObject::isLoaded()
     return _state == LS_LOADED;
 }
 
+bool SecurityInterfaceObject::allowsPlainConfiguration()
+{
+    // A Secure-capable product may be downloaded as a plain KNX device. Only
+    // an untouched, disabled Security IO may be omitted by that ETS download.
+    // Loading/error states, enabled security mode and any GO security flag
+    // require a completed Security IO download instead.
+    if (_state != LS_UNLOADED || _securityModeEnabled)
+        return false;
+
+    Property* flags = property(PID_GO_SECURITY_FLAGS);
+    uint8_t countBytes[2] = {};
+    if (flags == nullptr || flags->read(0, 1, countBytes) != 1)
+        return false;
+    const uint16_t count = getWord(countBytes);
+    if (count > flags->MaxElements())
+        return false;
+    for (uint16_t index = 1; index <= count; ++index)
+    {
+        uint8_t value = 0;
+        if (flags->read(index, 1, &value) != 1 || value != 0)
+            return false;
+    }
+    return true;
+}
+
 LoadState SecurityInterfaceObject::loadState()
 {
     return _state;

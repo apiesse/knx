@@ -52,6 +52,7 @@ public:
   bool isSecurityModeEnabled();
 
   bool isLoaded();
+  bool allowsPlainConfiguration();
 
   const uint8_t* toolKey();                           // returns single tool key (ETS)
   const uint8_t* p2pKey(uint16_t addressIndex);       // returns p2p key for IA index

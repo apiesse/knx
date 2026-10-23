@@ -164,7 +164,8 @@ bool BauSystemBDevice::configured()
         && _appProgram.loadState() == LS_LOADED;
 
 #ifdef USE_DATASECURE
-    _configured &= _secIfObj.loadState() == LS_LOADED;
+    _configured &= _secIfObj.isLoaded() ||
+        _secIfObj.allowsPlainConfiguration();
 #endif
 
     return _configured;
