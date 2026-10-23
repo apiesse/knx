@@ -136,6 +136,7 @@ void Memory::readMemory()
         return;
     }
 #endif
+    bool repairedTableReferences = false;
     print("Restore TableObjs: ");
     println(_tableObjCount);
     for (int i = 0; i < _tableObjCount; i++)
@@ -145,7 +146,38 @@ void Memory::readMemory()
         buffer = popWord(memorySize, buffer);
         print("Size: ");
         println(memorySize);
-        if (memorySize == 0)
+        // A new firmware/security profile can grow the serialized metadata
+        // over table blocks allocated by an older image. Never admit those
+        // blocks to _usedList: unloading them would put protected metadata
+        // back into _freeList, where ETS could allocate it again.
+        const uint32_t reference = _tableObjects[i]->_data != nullptr
+            ? toRelative(_tableObjects[i]->_data) : 0;
+        const bool empty = memorySize == 0 && reference == 0 && _tableObjects[i]->_size == 0;
+        bool valid = memorySize != 0 && reference != 0 &&
+            (reference & 3U) == 0 && (memorySize & 3U) == 0 &&
+            _tableObjects[i]->_size != 0 && memorySize >= _tableObjects[i]->_size &&
+            applicationMemoryRange(reference, memorySize);
+        if (valid)
+        {
+            const uint8_t* begin = _tableObjects[i]->_data;
+            const uint8_t* end = begin + memorySize;
+            for (MemoryBlock* used = _usedList; used != nullptr; used = used->next)
+                if (begin < used->address + used->size && used->address < end)
+                {
+                    valid = false;
+                    break;
+                }
+        }
+        if (!empty && !valid)
+        {
+            println("Discarding table reference outside current application memory");
+            _tableObjects[i]->_state = LS_UNLOADED;
+            _tableObjects[i]->_data = nullptr;
+            _tableObjects[i]->_size = 0;
+            repairedTableReferences = true;
+            continue;
+        }
+        if (empty)
             continue;
 
         // this works because TableObject saves a relative addr and restores it itself
@@ -166,6 +198,8 @@ void Memory::readMemory()
 #endif
     }
     println("restored TableObjects");
+    if (repairedTableReferences)
+        writeMemory(); // persist repaired references before another cold boot
 }
 
 void Memory::writeMemory()
@@ -307,6 +341,13 @@ uint8_t* Memory::allocMemory(size_t size)
     // find the smallest possible block that is big enough
     while (freeBlock)
     {
+        const uint32_t start = toRelative(freeBlock->address);
+        if (!applicationMemoryRange(start, freeBlock->size))
+        {
+            println("Invalid free block in application allocator");
+            _platform.fatalError();
+            return nullptr;
+        }
         if (freeBlock->size >= size)
         {
             if (blockToUse != nullptr && (blockToUse->size - size) > (freeBlock->size - size))
@@ -345,6 +386,12 @@ uint8_t* Memory::allocMemory(size_t size)
 
 void Memory::freeMemory(uint8_t* ptr)
 {
+    if (ptr == nullptr || !applicationMemoryRange(toRelative(ptr), 1))
+    {
+        println("Refusing to free protected or invalid table memory");
+        _platform.fatalError();
+        return;
+    }
     MemoryBlock* block = _usedList;
     MemoryBlock* found = nullptr;
     while (block)
@@ -560,6 +607,12 @@ MemoryBlock* Memory::findBlockInList(MemoryBlock* head, uint8_t* address)
 
 void Memory::addNewUsedBlock(uint8_t* address, size_t size)
 {
+    if (address == nullptr || !applicationMemoryRange(toRelative(address), size))
+    {
+        println("Refusing restored table outside application memory");
+        _platform.fatalError();
+        return;
+    }
     MemoryBlock* smallerFreeBlock = _freeList;
     // find block in freeList where the new used block is contained in
     while (smallerFreeBlock)

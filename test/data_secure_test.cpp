@@ -20,10 +20,18 @@ public:
     alignas(4) uint8_t memory[16384] = {};
     std::map<uint32_t, std::vector<uint8_t>> journal;
     bool healthy = true;
+    unsigned nvmCommits = 0;
     void restart() override {}
     void fatalError() override { std::abort(); }
     uint8_t* getNonVolatileMemoryStart() override { return memory; }
     size_t getNonVolatileMemorySize() override { return sizeof(memory); }
+    uint32_t writeNonVolatileMemory(uint32_t address, uint8_t* data, size_t size) override
+    {
+        assert(address <= sizeof(memory) && size <= sizeof(memory) - address);
+        std::memcpy(memory + address, data, size);
+        return address + size;
+    }
+    void commitNonVolatileMemory() override { ++nvmCommits; }
     bool readFactoryDeviceKey(uint8_t key[16]) override
     { for (unsigned i = 0; i < 16; ++i) key[i] = i; return true; }
     bool fillRandom(uint8_t* bytes, size_t length) override
@@ -62,10 +70,11 @@ class TestDevice : public BauSystemBDevice
 {
 public:
     TestLink link;
-    explicit TestDevice(TestPlatform& platform) : BauSystemBDevice(platform),
+    explicit TestDevice(TestPlatform& platform, bool populate = true) : BauSystemBDevice(platform),
         link(_deviceObj, _netLayer.getInterface(), platform, *this)
     {
         _netLayer.getInterface().dataLinkLayer(link); _memory.readMemory();
+        if (!populate) return;
         _deviceObj.individualAddress(0x1102);
         load(_addrTable, {1, 0x2345}); load(_assocTable, {1, 1, 1});
         load(_groupObjTable, {1, 0xdc07}); // one-byte GO, RW/TX/response update
@@ -99,6 +108,30 @@ public:
     { return type == OT_SECURITY ? static_cast<InterfaceObject*>(&_secIfObj) : nullptr; }
     SecureApplicationLayer& sal() { return _appLayer; }
     SecurityInterfaceObject& security() { return _secIfObj; }
+    TableObject& addressTable() { return _addrTable; }
+    TableObject& associationTable() { return _assocTable; }
+    TableObject& groupTable() { return _groupObjTable; }
+    TableObject& applicationTable() { return _appProgram; }
+    void saveNvm() { _memory.writeMemory(); }
+    uint32_t tableReference(TableObject& table)
+    {
+        uint8_t data[4] = {};
+        assert(table.property(PID_TABLE_REFERENCE)->read(1, 1, data) == 1);
+        return getInt(data);
+    }
+    void setLoading(TableObject& table)
+    {
+        const uint8_t event = LE_START_LOADING;
+        assert(table.property(PID_LOAD_STATE_CONTROL)->write(1, 1, &event) == 1);
+    }
+    void allocate(TableObject& table, uint32_t size)
+    {
+        uint8_t start = LE_START_LOADING;
+        assert(table.property(PID_LOAD_STATE_CONTROL)->write(1, 1, &start) == 1);
+        uint8_t command[10] = {LE_ADDITIONAL_LOAD_CONTROLS, 0x0B};
+        pushInt(size, command + 2);
+        assert(table.property(PID_LOAD_STATE_CONTROL)->write(1, 1, command) == 1);
+    }
     GroupObject& go() { return _groupObjTable.get(1); }
     void securityFlag(uint8_t flag)
     { assert(_secIfObj.property(PID_GO_SECURITY_FLAGS)->write(1, 1, &flag) == 1); }
@@ -289,10 +322,141 @@ static void plainConfigurationDoesNotRequireSecurityDownload()
     }
 }
 
+static void staleTableReferencesAreMigratedWithoutMetadataWrites()
+{
+    TestPlatform platform;
+    size_t metadataLimit = 0;
+    uint32_t addressReference = 0, associationReference = 0;
+    uint32_t applicationReference = 0, groupReference = 0;
+    {
+        TestDevice original(platform);
+        original.loadApplication();
+        original.setLoading(original.applicationTable());
+        original.setLoading(original.groupTable());
+        original.saveNvm();
+        addressReference = original.tableReference(original.addressTable());
+        associationReference = original.tableReference(original.associationTable());
+        metadataLimit = addressReference; // first allocated block follows metadata
+        applicationReference = original.tableReference(original.applicationTable());
+        groupReference = original.tableReference(original.groupTable());
+        assert(applicationReference >= metadataLimit && groupReference >= metadataLimit);
+    }
+    const unsigned initialCommits = platform.nvmCommits;
+    {
+        TestDevice validCold(platform, false);
+        assert(validCold.tableReference(validCold.addressTable()) == metadataLimit);
+        assert(validCold.tableReference(validCold.associationTable()) == associationReference);
+        assert(validCold.applicationTable().loadState() == LS_LOADING);
+        assert(validCold.groupTable().loadState() == LS_LOADING);
+        assert(platform.nvmCommits == initialCommits); // valid restore does not rewrite NVM
+    }
+    auto storedReference = [&](uint32_t value) -> size_t {
+        size_t found = sizeof(platform.memory);
+        for (size_t pos = 0; pos + 4 <= metadataLimit; ++pos)
+            if (getInt(platform.memory + pos) == value)
+            {
+                assert(found == sizeof(platform.memory));
+                found = pos;
+            }
+        assert(found != sizeof(platform.memory));
+        return found;
+    };
+    const size_t addressRecord = storedReference(addressReference);
+    const size_t associationRecord = storedReference(associationReference);
+
+    // Simulate App7 references that fell under a larger App10 Secure metadata
+    // prefix, with otherwise valid current metadata and two valid mixed-state
+    // tables. The allocation lengths remain the sizes saved by the stack.
+    pushInt(metadataLimit - 36, platform.memory + addressRecord);
+    pushInt(metadataLimit - 20, platform.memory + associationRecord);
+    {
+        TestDevice migrated(platform, false);
+        assert(platform.nvmCommits == initialCommits + 1);
+        assert(migrated.deviceObject().individualAddress() == 0x1102);
+        assert(migrated.addressTable().loadState() == LS_UNLOADED);
+        assert(migrated.associationTable().loadState() == LS_UNLOADED);
+        assert(migrated.tableReference(migrated.addressTable()) == 0);
+        assert(migrated.tableReference(migrated.associationTable()) == 0);
+        assert(migrated.applicationTable().loadState() == LS_LOADING);
+        assert(migrated.groupTable().loadState() == LS_LOADING);
+        assert(migrated.tableReference(migrated.applicationTable()) == applicationReference);
+        assert(migrated.tableReference(migrated.groupTable()) == groupReference);
+        uint8_t groupKey[18] = {};
+        assert(migrated.security().property(PID_GRP_KEY_TABLE)->read(1, 1, groupKey) == 1);
+        for (unsigned i = 0; i < 16; ++i) assert(groupKey[i + 2] == i);
+
+        // The repair is committed on restore; a subsequent ETS allocation
+        // must remain above the reserved prefix and never touch it.
+        std::vector<uint8_t> prefix(platform.memory, platform.memory + metadataLimit);
+        migrated.allocate(migrated.addressTable(), 16);
+        migrated.allocate(migrated.associationTable(), 30);
+        assert(migrated.tableReference(migrated.addressTable()) >= metadataLimit);
+        assert(migrated.tableReference(migrated.associationTable()) >= metadataLimit);
+        assert(std::memcmp(prefix.data(), platform.memory, prefix.size()) == 0);
+        migrated.saveNvm();
+    }
+    {
+        TestDevice cold(platform, false);
+        assert(cold.deviceObject().individualAddress() == 0x1102);
+        assert(cold.tableReference(cold.addressTable()) >= metadataLimit);
+        assert(cold.tableReference(cold.associationTable()) >= metadataLimit);
+        assert(cold.tableReference(cold.applicationTable()) == applicationReference);
+        assert(cold.tableReference(cold.groupTable()) == groupReference);
+        assert(platform.nvmCommits == initialCommits + 2); // only explicit save after ETS allocation
+    }
+}
+
+static void overlappingAndOutOfBoundsReferencesAreRejected()
+{
+    TestPlatform platform;
+    uint32_t addressReference = 0, associationReference = 0, groupReference = 0;
+    {
+        TestDevice original(platform);
+        original.loadApplication();
+        original.setLoading(original.applicationTable());
+        original.setLoading(original.groupTable());
+        original.saveNvm();
+        addressReference = original.tableReference(original.addressTable());
+        associationReference = original.tableReference(original.associationTable());
+        groupReference = original.tableReference(original.groupTable());
+    }
+    auto referencePosition = [&](uint32_t value) -> size_t {
+        size_t found = sizeof(platform.memory);
+        for (size_t pos = 0; pos + 4 <= addressReference; ++pos)
+            if (getInt(platform.memory + pos) == value)
+            {
+                assert(found == sizeof(platform.memory));
+                found = pos;
+            }
+        assert(found != sizeof(platform.memory));
+        return found;
+    };
+    pushInt(groupReference, platform.memory + referencePosition(addressReference));
+    pushInt(sizeof(platform.memory) - 4, platform.memory + referencePosition(associationReference));
+    {
+        TestDevice repaired(platform, false);
+        assert(repaired.deviceObject().individualAddress() == 0x1102);
+        assert(repaired.tableReference(repaired.addressTable()) == 0);
+        assert(repaired.tableReference(repaired.associationTable()) == 0);
+        assert(repaired.tableReference(repaired.groupTable()) == groupReference);
+        assert(repaired.groupTable().loadState() == LS_LOADING);
+        assert(platform.nvmCommits == 2);
+    }
+    {
+        TestDevice cold(platform, false);
+        assert(cold.tableReference(cold.addressTable()) == 0);
+        assert(cold.tableReference(cold.associationTable()) == 0);
+        assert(cold.tableReference(cold.groupTable()) == groupReference);
+        assert(platform.nvmCommits == 2);
+    }
+}
+
 int main()
 {
     knownAnswersAndReplay(); authenticationOnlyUsesInnerApduAndDurableReplay();
     longAuthenticationProtectsEveryByte();
     failureDoesNotWedgeGroupQueue(); synchronizesFullAddressesAndExpiresChallenges();
     plainConfigurationDoesNotRequireSecurityDownload();
+    staleTableReferencesAreMigratedWithoutMetadataWrites();
+    overlappingAndOutOfBoundsReferencesAreRejected();
 }

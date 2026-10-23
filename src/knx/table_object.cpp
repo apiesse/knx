@@ -148,10 +148,12 @@ const uint8_t* TableObject::restore(const uint8_t* buffer)
     buffer = popInt(relativeAddress, buffer);
     //println(relativeAddress);
 
-    if (relativeAddress != 0)
-        _data = _memory.toAbsolute(relativeAddress);
-    else
-        _data = 0;
+    // Persisted references can belong to an older NVM layout. Never form a
+    // pointer outside the current NVM image; Memory::readMemory also checks
+    // that the complete allocation is outside its metadata prefix.
+    _data = relativeAddress != 0
+        ? _memory.toAbsoluteChecked(relativeAddress, _size ? _size : 1)
+        : nullptr;
     //println((uint32_t)_data);
     return InterfaceObject::restore(buffer);
 }
