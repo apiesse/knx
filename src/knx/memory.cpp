@@ -628,12 +628,21 @@ void Memory::addNewUsedBlock(uint8_t* address, size_t size)
     {
         println("addNewUsedBlock: no smallerBlock found");
         _platform.fatalError();
+        return;
     }
 
-    if ((smallerFreeBlock->address + smallerFreeBlock->size) < (address + size))
+    // The requested range must be wholly inside this *free* block. A range
+    // can be inside application NVM yet precede the first free block (or sit
+    // inside an already used block); subtracting it from the free start would
+    // underflow and corrupt the allocator.
+    if (address < smallerFreeBlock->address ||
+        size > smallerFreeBlock->size ||
+        static_cast<size_t>(address - smallerFreeBlock->address) >
+            smallerFreeBlock->size - size)
     {
         println("addNewUsedBlock: found block can't contain new block");
         _platform.fatalError();
+        return;
     }
 
     if (smallerFreeBlock->address == address && smallerFreeBlock->size == size)
