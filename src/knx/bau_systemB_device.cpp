@@ -55,7 +55,7 @@ void BauSystemBDevice::loop()
 
 void BauSystemBDevice::sendNextGroupTelegram()
 {
-    if(!configured() || _pendingAsap != 0)
+    if (!groupCommunicationEnabled() || !configured() || _pendingAsap != 0)
         return;
     
     uint16_t& startIdx = _nextGroupAsap;
@@ -210,6 +210,7 @@ void BauSystemBDevice::completeGroupRequest(uint16_t asap, ComFlag kind, bool su
 
 void BauSystemBDevice::groupValueReadIndication(uint16_t asap, Priority priority, HopCountType hopType, const SecurityControl &secCtrl)
 {
+    if (!groupCommunicationEnabled() || !configured()) return;
 #ifdef USE_DATASECURE
     DataSecurity requiredGoSecurity;
 
@@ -236,6 +237,7 @@ void BauSystemBDevice::groupValueReadIndication(uint16_t asap, Priority priority
 void BauSystemBDevice::groupValueReadAppLayerConfirm(uint16_t asap, Priority priority, HopCountType hopType, const SecurityControl &secCtrl, uint8_t* data,
     uint8_t dataLength)
 {
+    if (!groupCommunicationEnabled() || !configured()) return;
     if (asap == 0 || asap > _groupObjTable.entryCount()) return;
 #ifdef USE_DATASECURE
     if (secCtrl.toolAccess || secCtrl.dataSecurity != _secIfObj.getGroupObjectSecurity(asap))
@@ -251,6 +253,7 @@ void BauSystemBDevice::groupValueReadAppLayerConfirm(uint16_t asap, Priority pri
 
 void BauSystemBDevice::groupValueWriteIndication(uint16_t asap, Priority priority, HopCountType hopType, const SecurityControl &secCtrl, uint8_t * data, uint8_t dataLength)
 {
+    if (!groupCommunicationEnabled() || !configured()) return;
 #ifdef USE_DATASECURE
     DataSecurity requiredGoSecurity;
 

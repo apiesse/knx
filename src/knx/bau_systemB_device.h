@@ -40,6 +40,9 @@ class BauSystemBDevice : public BauSystemB
     { _transmittedHandler = callback; _transmittedContext = context; }
 
   protected:
+    // Device-specific admission policy. Management P2P stays available when
+    // group communication is quarantined during an ETS contract migration.
+    virtual bool groupCommunicationEnabled() const { return true; }
     ApplicationLayer& applicationLayer() override;
 
     void groupValueWriteLocalConfirm(AckType ack, uint16_t asap, Priority priority, HopCountType hopType, const SecurityControl &secCtrl,

@@ -69,6 +69,7 @@ public:
     void enabled(bool) override {}
     using BauSystemBDevice::sendNextGroupTelegram;
     using BauSystemBDevice::groupValueReadIndication;
+    using BauSystemBDevice::groupValueReadAppLayerConfirm;
     using BauSystemB::propertyValueReadIndication;
     using BauSystemB::propertyValueExtReadIndication;
     ApplicationLayer &app() { return _appLayer; }
@@ -105,6 +106,59 @@ public:
         _appLayer.dataGroupIndication(NetworkLayerParameter, LowPriority, tsap, frame.apdu());
     }
 };
+
+class QuarantinedDevice : public Device {
+public:
+    explicit QuarantinedDevice(Platform &platform) : Device(platform) {}
+    void admitGroups(bool enabled) { admitted = enabled; }
+protected:
+    bool groupCommunicationEnabled() const override { return admitted; }
+private:
+    bool admitted = false;
+};
+
+static void groupValueQuarantineTest() {
+    FakePlatform platform;
+    QuarantinedDevice device(platform);
+    device.loadGroups();
+    auto &go = device.groupObjectTable().get(1);
+    unsigned received = 0;
+    device.receivedGroupObjectCallback([](GroupObject&, void *context) {
+        ++*static_cast<unsigned*>(context);
+    }, &received);
+
+    // Individual-address management still reaches the BAU while group traffic
+    // is quarantined. This is the ETS P2P programming path.
+    CemiFrame request(4);
+    request.apdu().type(PropertyDescriptionRead);
+    request.apdu().data()[1] = 2;
+    request.apdu().data()[2] = PID_TABLE;
+    request.apdu().data()[3] = 0;
+    device.app().dataIndividualIndication(NetworkLayerParameter, LowPriority,
+        0x11ff, request.apdu());
+    assert(device.link.sent.size() == 1);
+    assert(device.link.sent.back().apdu().type() == PropertyDescriptionResponse);
+    device.link.sent.clear();
+
+    device.busWrite(1, 23.0f);
+    assert(!go.initialized() && received == 0);
+    uint8_t response[2] = {0, 0};
+    device.groupValueReadAppLayerConfirm(1, LowPriority, NetworkLayerParameter,
+                                        SecurityControl{}, response, sizeof(response));
+    assert(!go.initialized() && received == 0);
+    assert(go.value(KNXValue(21.0f), DPT_Value_Temp));
+    device.groupValueReadIndication(1, LowPriority, NetworkLayerParameter, SecurityControl{});
+    device.sendNextGroupTelegram();
+    assert(device.link.sent.empty());
+    assert((float)go.value(DPT_Value_Temp) == 21.0f);
+
+    device.admitGroups(true);
+    device.busWrite(1, 25.0f);
+    assert(received == 1 && (float)go.value(DPT_Value_Temp) == 25.0f);
+    device.groupValueReadIndication(1, LowPriority, NetworkLayerParameter, SecurityControl{});
+    assert(device.link.sent.size() == 1);
+    assert(device.link.sent.back().apdu().type() == GroupValueResponse);
+}
 
 static void associationDescriptionTest() {
     FakePlatform platform;
@@ -250,6 +304,7 @@ static void enumerationCodecTest() {
 }
 
 int main() {
+    groupValueQuarantineTest();
     associationDescriptionTest();
     memoryTest();
     diagnosticFlagsTest();
