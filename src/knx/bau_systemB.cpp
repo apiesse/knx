@@ -455,17 +455,20 @@ void BauSystemB::restartRequestIndication(Priority priority, HopCountType hopTyp
     else if (restartType == RestartType::MasterReset)
     {
         uint8_t errorCode = checkmasterResetValidity(eraseCode, channel);
-        // The response is queued in the transport and TPUART. Restarting here
-        // would discard it before ETS receives its application response.
-        _confirmedRestartPending = false;
         applicationLayer().restartResponse(AckRequested, priority, hopType, secCtrl, errorCode, (errorCode == 0) ? kRestartProcessTime : 0);
         if (errorCode != 0)
             return;
         doMasterReset(eraseCode, channel);
-        _memory.writeMemory();
-        _confirmedRestartQueuedAt = millis();
-        _confirmedRestartPending = true;
-        return;
+        if (eraseCode == EraseCode::ConfirmedRestart)
+        {
+            // ETS expects this particular application response before its
+            // initial restart. The other erase codes retain their original
+            // immediate persist/restart behavior after changing live state.
+            _memory.writeMemory();
+            _confirmedRestartQueuedAt = millis();
+            _confirmedRestartPending = true;
+            return;
+        }
     }
     else
     {
