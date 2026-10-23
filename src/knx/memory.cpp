@@ -1,8 +1,18 @@
 #include "memory.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "bits.h"
+
+static void wipeSaveBuffer(uint8_t* buffer, size_t size)
+{
+    // Save/restore records can contain KNX Secure keys even when this ETS
+    // installation uses plain commissioning. Do not leave a copy on the heap.
+    volatile uint8_t* bytes = buffer;
+    while (size-- > 0)
+        *bytes++ = 0;
+}
 
 Memory::Memory(Platform& platform, DeviceObject& deviceObject)
     : _platform(platform), _deviceObject(deviceObject)
@@ -35,6 +45,12 @@ void Memory::readMemory()
     }
 
     uint16_t metadataBlockSize = alignToPageSize(_metadataSize);
+    if (metadataBlockSize > flashSize)
+    {
+        println("KNX metadata exceeds non-volatile memory");
+        _platform.fatalError();
+        return;
+    }
 
     _freeList = new MemoryBlock(flashStart + metadataBlockSize, flashSize - metadataBlockSize);
 
@@ -155,14 +171,47 @@ void Memory::readMemory()
 void Memory::writeMemory()
 {
     // first get the necessary size of the writeBuffer
-    uint16_t writeBufferSize = _metadataSize;
+    size_t writeBufferSize = _metadataSize;
     for (int i = 0; i < _saveCount; i++)
         writeBufferSize = MAX(writeBufferSize, _saveRestores[i]->saveSize());
 
     for (int i = 0; i < _tableObjCount; i++)
         writeBufferSize = MAX(writeBufferSize, _tableObjects[i]->saveSize() + 2 /*for memory pos*/);
-    
-    uint8_t buffer[writeBufferSize];
+
+    const size_t flashSize = _platform.getNonVolatileMemorySize();
+    const size_t metadataBlockSize = alignToPageSize(_metadataSize);
+    print("KNX save metadata bytes ");
+    print(_metadataSize);
+    print(" aligned ");
+    print(metadataBlockSize);
+    print(" heap buffer bytes ");
+    print(writeBufferSize);
+    print(" NVM bytes ");
+    println(flashSize);
+    if (metadataBlockSize > flashSize || writeBufferSize > flashSize || writeBufferSize == 0)
+    {
+        println("KNX save exceeds non-volatile memory");
+        _platform.fatalError();
+        return;
+    }
+    uint8_t* buffer = static_cast<uint8_t*>(malloc(writeBufferSize));
+    if (buffer == nullptr)
+    {
+        println("KNX save heap allocation failed");
+        _platform.fatalError();
+        return;
+    }
+    // Every record is bounded independently before it is copied into the
+    // platform EEPROM buffer. This also prevents metadata from overwriting
+    // the table region when future secure-profile dimensions change.
+    auto writeRecord = [&](size_t size, uint32_t& position) -> bool {
+        if (size > writeBufferSize || position > metadataBlockSize ||
+            size > metadataBlockSize - position || position > flashSize ||
+            size > flashSize - position)
+            return false;
+        position = _platform.writeNonVolatileMemory(position, buffer, size);
+        return true;
+    };
     uint32_t flashPos = 0;
     uint8_t* bufferPos = buffer;
 
@@ -171,19 +220,19 @@ void Memory::writeMemory()
     bufferPos = pushByteArray(_deviceObject.hardwareType(), LEN_HARDWARE_TYPE, bufferPos);
     bufferPos = pushWord(_deviceObject.version(), bufferPos);
 
-    flashPos = _platform.writeNonVolatileMemory(flashPos, buffer, bufferPos - buffer);
+    bool complete = writeRecord(bufferPos - buffer, flashPos);
 
     print("save saveRestores ");
     println(_saveCount);
-    for (int i = 0; i < _saveCount; i++)
+    for (int i = 0; complete && i < _saveCount; i++)
     {
         bufferPos = _saveRestores[i]->save(buffer);
-        flashPos = _platform.writeNonVolatileMemory(flashPos, buffer, bufferPos - buffer);
+        complete = writeRecord(bufferPos - buffer, flashPos);
     }
 
     print("save tableobjs ");
     println(_tableObjCount);
-    for (int i = 0; i < _tableObjCount; i++)
+    for (int i = 0; complete && i < _tableObjCount; i++)
     {
         bufferPos = _tableObjects[i]->save(buffer);
 
@@ -194,16 +243,27 @@ void Memory::writeMemory()
             if (block == nullptr)
             {
                 println("_data of TableObject not in _usedList");
+                wipeSaveBuffer(buffer, writeBufferSize);
+                free(buffer);
                 _platform.fatalError();
+                return;
             }
             bufferPos = pushWord(block->size, bufferPos);
         }
         else
             bufferPos = pushWord(0, bufferPos);
 
-        flashPos = _platform.writeNonVolatileMemory(flashPos, buffer, bufferPos - buffer);
+        complete = writeRecord(bufferPos - buffer, flashPos);
     }
-    
+
+    wipeSaveBuffer(buffer, writeBufferSize);
+    free(buffer);
+    if (!complete)
+    {
+        println("KNX save metadata record exceeds reserved area");
+        _platform.fatalError();
+        return;
+    }
     _platform.commitNonVolatileMemory();
 }
 
