@@ -502,8 +502,9 @@ void ApplicationLayer::individualAddressSerialNumberReadResponse(AckType ack, Ho
     if (serialNumber == nullptr)
         return;
 
-    // APCI data octet + six-byte serial number + two-byte domain address.
-    CemiFrame frame(9);
+    // 03_03_07: APCI + serial number (6) + domain address (2) + reserved (2).
+    // ETS (Falcon) and xknx reject the 8-octet form; CemiFrame zeroes the reserved octets.
+    CemiFrame frame(11);
     APDU& apdu = frame.apdu();
     apdu.type(IndividualAddressSerialNumberResponse);
     uint8_t* data = apdu.data() + 1;
@@ -519,7 +520,8 @@ void ApplicationLayer::individualAddressSerialNumberWriteRequest(AckType ack, Ho
     if (serialNumber == nullptr)
         return;
 
-    CemiFrame frame(9);
+    // 03_03_07: APCI + serial number (6) + new individual address (2) + reserved (4).
+    CemiFrame frame(13);
     APDU& apdu = frame.apdu();
     apdu.type(IndividualAddressSerialNumberWrite);
     uint8_t* data = apdu.data() + 1;
@@ -669,7 +671,8 @@ void ApplicationLayer::IndividualAddressSerialNumberReadResponse(Priority priori
     if (domainAddress == nullptr || knxSerialNumber == nullptr)
         return;
 
-    CemiFrame frame(9);
+    // Same 10-octet payload as above: serial, domain address, two reserved octets.
+    CemiFrame frame(11);
     APDU& apdu = frame.apdu();
     apdu.type(IndividualAddressSerialNumberResponse);
 
