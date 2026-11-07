@@ -921,13 +921,16 @@ class ApplicationLayerLengthContractTest(unittest.TestCase):
             "application_layer.cpp",
             "ApplicationLayer::individualAddressSerialNumberReadResponse",
         )
-        self.assertRegex(body, r"CemiFrame\s+frame\s*\(\s*9\s*\)")
+        # Serial (6) + domain address (2) + reserved (2): ETS needs all ten octets.
+        self.assertRegex(body, r"CemiFrame\s+frame\s*\(\s*11\s*\)")
         self.assertIn("pushWord(domainAddress, data)", body)
 
     def test_fixed_response_builders_do_not_pad_beyond_their_protocol_payload(self) -> None:
         for function, length in (
-            ("ApplicationLayer::individualAddressSerialNumberWriteRequest", 9),
-            ("ApplicationLayer::IndividualAddressSerialNumberReadResponse", 9),
+            # 03_03_07 serial-number services carry reserved octets: ETS rejects
+            # a response without them (no "Scaricamento Completo" by serial).
+            ("ApplicationLayer::individualAddressSerialNumberWriteRequest", 13),
+            ("ApplicationLayer::IndividualAddressSerialNumberReadResponse", 11),
             ("ApplicationLayer::keyWriteResponse", 2),
         ):
             body = _function_body("application_layer.cpp", function)
